@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<!-- r3d_ws_bridge — C++ realization of R3D/web_a.py (ROS2 + WebSocket bridge). -->
+<package format="3">
+  <name>r3d_bringup</name>
+  <version>1.0.0</version>
+  <description>
+    ROS2 node that time-syncs LIO-SAM odometry with registered LiDAR point clouds
+    and streams img/odom/pcd to mobile clients over a WebSocket (ws://0.0.0.0:8765/data),
+    plus device-info / mapping start-stop / file-list commands. C++ port of R3D/web_a.py.
+  </description>
+  <maintainer email="dev@r3d.local">R3D</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+
+  <!-- System (non-ROS) libraries, resolved by rosdep -->
+  <build_depend>libopencv-dev</build_depend>
+  <build_depend>libboost-dev</build_depend>
+  <exec_depend>libopencv-dev</exec_depend>
+
+  <test_depend>ament_cmake_copyright</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

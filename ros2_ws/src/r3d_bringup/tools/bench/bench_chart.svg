@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 480" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif" text-rendering="geometricPrecision">
+  <title>r3d_ws_bridge microbenchmark: C++ vs Python</title>
+  <desc>Grouped bar chart of per-frame processing time in microseconds (log scale) for PointCloud2 parse, pcd JSON serialize, odom JSON serialize, and base64. Lower is better.</desc>
+  <style>
+    .surface{fill:#fcfcfb}
+    .grid{stroke:#e4e3df;stroke-width:1}
+    .axis{stroke:#c9c8c2;stroke-width:1}
+    .ink{fill:#0b0b0b}
+    .mut{fill:#52514e}
+    .s1{fill:#2a78d6}
+    .s2{fill:#1baf7a}
+    .lbl{font-size:11px}
+    .cat{font-size:13px;font-weight:600}
+    .val{font-size:11px;font-weight:600}
+    .ratio{font-size:11px}
+    .title{font-size:17px;font-weight:700}
+    .sub{font-size:12px}
+    @media (prefers-color-scheme:dark){
+      .surface{fill:#1a1a19}
+      .grid{stroke:#343430}
+      .axis{stroke:#3f3f3a}
+      .ink{fill:#ffffff}
+      .mut{fill:#c3c2b7}
+      .s1{fill:#3987e5}
+      .s2{fill:#199e70}
+    }
+  </style>
+
+  <rect class="surface" width="880" height="480"/>
+
+  <!-- title -->
+  <text class="title ink" x="40" y="34">Hot-path microbenchmark — C++ vs Python</text>
+  <text class="sub mut" x="40" y="52">time per frame (8000 points), log scale — lower is better</text>
+
+  <!-- legend -->
+  <g transform="translate(560,30)">
+    <rect class="s1" x="0" y="0" width="14" height="14" rx="2"/>
+    <text class="lbl ink" x="20" y="11">C++ (r3d_bench)</text>
+    <rect class="s2" x="150" y="0" width="14" height="14" rx="2"/>
+    <text class="lbl ink" x="170" y="11">Python (bench_parse.py)</text>
+  </g>
+
+  <!-- y gridlines + tick labels (1, 10, 100, 1k, 10k µs) -->
+  <g>
+    <line class="grid" x1="130" y1="400" x2="820" y2="400"/>
+    <line class="grid" x1="130" y1="312.5" x2="820" y2="312.5"/>
+    <line class="grid" x1="130" y1="225" x2="820" y2="225"/>
+    <line class="grid" x1="130" y1="137.5" x2="820" y2="137.5"/>
+    <line class="grid" x1="130" y1="50" x2="820" y2="50"/>
+    <text class="lbl mut" x="122" y="404" text-anchor="end">1</text>
+    <text class="lbl mut" x="122" y="316.5" text-anchor="end">10</text>
+    <text class="lbl mut" x="122" y="229" text-anchor="end">100</text>
+    <text class="lbl mut" x="122" y="141.5" text-anchor="end">1k</text>
+    <text class="lbl mut" x="122" y="54" text-anchor="end">10k</text>
+    <text class="lbl mut" x="40" y="225" transform="rotate(-90 40 225)" text-anchor="middle">µs / frame</text>
+    <line class="axis" x1="130" y1="50" x2="130" y2="400"/>
+    <line class="axis" x1="130" y1="400" x2="820" y2="400"/>
+  </g>
+
+  <!-- Group 1: parse  (cpp 11µs, py 945µs)  center 216 -->
+  <g>
+    <rect class="s1" x="182" y="308.9" width="32" height="91.1" rx="2"/>
+    <rect class="s2" x="218" y="139.7" width="32" height="260.3" rx="2"/>
+    <text class="val ink" x="198" y="302" text-anchor="middle">11 µs</text>
+    <text class="val ink" x="234" y="133" text-anchor="middle">945 µs</text>
+    <text class="cat ink" x="216" y="421" text-anchor="middle">PointCloud2 parse</text>
+    <text class="ratio mut" x="216" y="438" text-anchor="middle">×86 faster</text>
+  </g>
+
+  <!-- Group 2: pcd JSON  (cpp 1490µs, py 6250µs)  center 388.5 -->
+  <g>
+    <rect class="s1" x="354.5" y="122.4" width="32" height="277.6" rx="2"/>
+    <rect class="s2" x="390.5" y="67.8" width="32" height="332.2" rx="2"/>
+    <text class="val ink" x="370.5" y="116" text-anchor="middle">1.49 ms</text>
+    <text class="val ink" x="406.5" y="61" text-anchor="middle">6.25 ms</text>
+    <text class="cat ink" x="388.5" y="421" text-anchor="middle">pcd JSON serialize</text>
+    <text class="ratio mut" x="388.5" y="438" text-anchor="middle">×4.2 faster</text>
+  </g>
+
+  <!-- Group 3: odom JSON  (cpp 1.1µs, py 1.6µs)  center 561 -->
+  <g>
+    <rect class="s1" x="527" y="396.4" width="32" height="3.6" rx="2"/>
+    <rect class="s2" x="563" y="382.1" width="32" height="17.9" rx="2"/>
+    <text class="val ink" x="543" y="390" text-anchor="middle">1.1 µs</text>
+    <text class="val ink" x="579" y="376" text-anchor="middle">1.6 µs</text>
+    <text class="cat ink" x="561" y="421" text-anchor="middle">odom JSON serialize</text>
+    <text class="ratio mut" x="561" y="438" text-anchor="middle">×1.5 faster</text>
+  </g>
+
+  <!-- Group 4: base64  (cpp 87µs, py 72µs)  center 733.5 -->
+  <g>
+    <rect class="s1" x="699.5" y="230.2" width="32" height="169.8" rx="2"/>
+    <rect class="s2" x="735.5" y="237.5" width="32" height="162.5" rx="2"/>
+    <text class="val ink" x="715.5" y="224" text-anchor="middle">87 µs</text>
+    <text class="val ink" x="751.5" y="231" text-anchor="middle">72 µs</text>
+    <text class="cat ink" x="733.5" y="421" text-anchor="middle">base64 (100 KB)</text>
+    <text class="ratio mut" x="733.5" y="438" text-anchor="middle">×0.83 (Python C-builtin)</text>
+  </g>
+
+  <text class="sub mut" x="40" y="466">Hardware: same host, Release build. Numbers are per-frame medians over 200 iters (parse/pcd) · 100k (odom) · 500 (base64).</text>
+</svg>

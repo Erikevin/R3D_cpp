@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- mobile-first: fill the screen, no zoom, safe-area aware -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0d1117">
+<title>R3D · PointCloud</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --line:#2a313c;
+    --txt:#e6edf3; --mut:#8b949e; --acc:#2f81f7; --green:#3fb950; --red:#f85149;
+    --amber:#d29922; --shadow:0 8px 30px rgba(0,0,0,.5);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    overscroll-behavior:none;}
+  #app{display:flex;flex-direction:column;height:100dvh;width:100vw;}
+
+  /* ---- top bar ---- */
+  #topbar{display:flex;align-items:center;gap:10px;padding:8px 12px;
+    padding-top:max(8px,env(safe-area-inset-top));background:var(--panel);
+    border-bottom:1px solid var(--line);z-index:5;}
+  #dot{width:10px;height:10px;border-radius:50%;background:var(--mut);flex:0 0 auto;box-shadow:0 0 8px currentColor;}
+  #dot.ok{background:var(--green);color:var(--green)} #dot.bad{background:var(--red);color:var(--red)}
+  #title{font-weight:600;font-size:15px;flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #connlbl{font-size:12px;color:var(--mut)}
+  .iconbtn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer}
+  .iconbtn:active{transform:scale(.96)}
+
+  /* ---- 3D viewport ---- */
+  #stage{position:relative;flex:1 1 auto;min-height:0;overflow:hidden}
+  #three{position:absolute;inset:0;display:block}
+  #hud{position:absolute;left:10px;top:10px;background:rgba(13,17,23,.72);backdrop-filter:blur(6px);
+    border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:12px;min-width:120px;pointer-events:none}
+  #hud .k{color:var(--mut)} #hud b{font-weight:600}
+  #fps{color:var(--acc)}
+
+  /* ---- bottom control sheet ---- */
+  #sheet{background:var(--panel);border-top:1px solid var(--line);padding:10px 12px;
+    padding-bottom:max(10px,env(safe-area-inset-bottom));}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  .btn{flex:1 1 0;min-width:90px;border:none;border-radius:10px;padding:13px 8px;font-size:14px;
+    font-weight:600;color:#fff;cursor:pointer;transition:transform .05s,opacity .15s}
+  .btn:active{transform:scale(.97)} .btn:disabled{opacity:.4;cursor:not-allowed}
+  .b-start{background:var(--green)} .b-stop{background:var(--red)}
+  .b-ghost{background:var(--panel2);border:1px solid var(--line);color:var(--txt)}
+  .statgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px;text-align:center}
+  .statgrid .cell{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 4px}
+  .statgrid .v{font-size:15px;font-weight:700} .statgrid .l{font-size:10px;color:var(--mut)}
+  #storebar{height:6px;border-radius:4px;background:var(--line);margin-top:4px;overflow:hidden}
+  #storebar i{display:block;height:100%;background:linear-gradient(90deg,var(--green),var(--amber),var(--red));width:0}
+
+  /* ---- file list drawer ---- */
+  #files{max-height:0;overflow:hidden;transition:max-height .25s ease;margin-top:8px}
+  #files.open{max-height:38vh;overflow:auto}
+  .fitem{display:flex;justify-content:space-between;gap:8px;padding:9px 8px;border-bottom:1px solid var(--line);font-size:13px}
+  .fitem .nm{font-weight:600} .fitem .ct{color:var(--mut);font-size:11px;white-space:nowrap}
+
+  /* ---- connect overlay ---- */
+  #overlay{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;
+    background:rgba(13,17,23,.94);backdrop-filter:blur(4px);padding:22px}
+  .card{width:100%;max-width:380px;background:var(--panel);border:1px solid var(--line);
+    border-radius:16px;padding:22px;box-shadow:var(--shadow)}
+  .card h1{margin:0 0 4px;font-size:20px} .card p.sub{margin:0 0 18px;color:var(--mut);font-size:13px}
+  label{display:block;font-size:12px;color:var(--mut);margin:12px 0 6px}
+  input[type=text]{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:9px;padding:11px 12px;font-size:14px;font-family:inherit}
+  .card .btn{width:100%;margin-top:6px}
+  #toast{position:absolute;left:50%;bottom:84px;transform:translateX(-50%);background:var(--panel2);
+    border:1px solid var(--line);border-radius:20px;padding:8px 16px;font-size:13px;opacity:0;
+    transition:opacity .2s;pointer-events:none;z-index:15}
+  #toast.show{opacity:1}
+  .hidden{display:none!important}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="topbar">
+    <span id="dot" class="bad"></span>
+    <span id="title">R3D PointCloud</span>
+    <span id="connlbl">未连接</span>
+    <button class="iconbtn" id="settingsBtn">⇄</button>
+  </div>
+
+  <div id="stage">
+    <canvas id="three"></canvas>
+    <div id="hud">
+      <div><span class="k">点数</span> <b id="hN">0</b></div>
+      <div><span class="k">位姿 X/Y/Z</span></div>
+      <div><b id="hP">—</b></div>
+      <div><span class="k">帧率</span> <b id="fps">—</b> pcd/s</div>
+    </div>
+    <div id="toast"></div>
+  </div>
+
+  <div id="sheet">
+    <div class="statgrid">
+      <div class="cell"><div class="v" id="sBat">—</div><div class="l">电池 %</div></div>
+      <div class="cell"><div class="v" id="sVer">—</div><div class="l">版本</div></div>
+      <div class="cell"><div class="v" id="sStor">—</div><div class="l">存储 GB</div></div>
+      <div class="cell"><div class="v" id="sUsed">—</div><div class="l">已用 %</div></div>
+    </div>
+    <div id="storebar"><i id="storefill"></i></div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn b-start" id="startBtn">▶ 开始建图</button>
+      <button class="btn b-stop" id="stopBtn">■ 停止</button>
+      <button class="btn b-ghost" id="filesBtn">📁 文件</button>
+    </div>
+    <div id="files"></div>
+  </div>
+
+  <!-- connect overlay -->
+  <div id="overlay">
+    <div class="card">
+      <h1>R3D 实时点云</h1>
+      <p class="sub">连接设备 WebSocket，或进入演示模式查看渲染效果。</p>
+      <label for="url">服务器地址</label>
+      <input type="text" id="url" value="ws://localhost:8765/data" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button class="btn b-start" id="connectBtn">连接</button>
+      <button class="btn b-ghost" id="demoBtn" style="margin-top:8px">演示模式（无需设备）</button>
+    </div>
+  </div>
+</div>
+
+<!-- vendored three.js r128 (offline-capable) -->
+<script src="three.min.js"></script>
+<script src="OrbitControls.js"></script>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+// ---------------- 3D scene ----------------
+const MAX_POINTS = 24000;
+let scene, camera, renderer, controls, points, geom, odomMesh, trail, trailPos;
+let lastPcdT = 0, pcdCount = 0, fpsVal = 0;
+
+function init3d(){
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0d1117);
+  scene.fog = new THREE.Fog(0x0d1117, 40, 120);
+
+  camera = new THREE.PerspectiveCamera(60, 1, 0.1, 500);
+  camera.position.set(18, 16, 18);
+
+  renderer = new THREE.WebGLRenderer({canvas:$("three"), antialias:true});
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  // grid + axes for spatial reference
+  const grid = new THREE.GridHelper(40, 40, 0x2a313c, 0x1c2230);
+  grid.position.y = 0;
+  scene.add(grid);
+
+  // point cloud (positions + per-vertex color by height)
+  geom = new THREE.BufferGeometry();
+  const pos = new Float32Array(MAX_POINTS * 3);
+  const col = new Float32Array(MAX_POINTS * 3);
+  geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geom.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  geom.setDrawRange(0, 0);
+  const mat = new THREE.PointsMaterial({size:0.10, vertexColors:true, sizeAttenuation:true});
+  points = new THREE.Points(geom, mat);
+  scene.add(points);
+
+  // odometry marker + trail
+  odomMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.35, 16, 16),
+    new THREE.MeshBasicMaterial({color:0xffd33d}));
+  scene.add(odomMesh);
+  trailPos = [];
+  const tg = new THREE.BufferGeometry();
+  tg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(6000), 3));
+  tg.setDrawRange(0, 0);
+  trail = new THREE.Line(tg, new THREE.LineBasicMaterial({color:0x2f81f7}));
+  scene.add(trail);
+
+  controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true; controls.dampingFactor = 0.1;
+  controls.target.set(0,1,0);
+
+  window.addEventListener("resize", resize);
+  resize();
+  animate();
+}
+function resize(){
+  const s = $("stage");
+  const w = s.clientWidth, h = s.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / Math.max(1,h); camera.updateProjectionMatrix();
+}
+// ROS (x forward, y left, z up) -> three (x=left, y=up, z=forward) via cyclic map
+function toThree(x,y,z){ return [y, z, x]; }
+// height colormap: blue -> cyan -> green -> yellow -> red
+function hcolor(h, out, o){
+  const t = Math.max(0, Math.min(1, (h + 3) / 8)); // map ~-3..5m to 0..1
+  const stops = [[0.12,0.56,1],[0.25,0.85,0.85],[0.25,0.80,0.30],[0.95,0.78,0.20],[1,0.32,0.29]];
+  const s = t * (stops.length-1), i = Math.floor(s), f = s-i;
+  const a = stops[i], b = stops[Math.min(stops.length-1, i+1)];
+  out[o]   = a[0]+(b[0]-a[0])*f;
+  out[o+1] = a[1]+(b[1]-a[1])*f;
+  out[o+2] = a[2]+(b[2]-a[2])*f;
+}
+function updatePcd(pts){
+  const pos = geom.attributes.position.array, col = geom.attributes.color.array;
+  const n = Math.min(pts.length, MAX_POINTS);
+  const c = [0,0,0];
+  for(let i=0;i<n;i++){
+    const p = pts[i];
+    const [tx,ty,tz] = toThree(p[0],p[1],p[2]);
+    pos[i*3]=tx; pos[i*3+1]=ty; pos[i*3+2]=tz;
+    hcolor(ty, col, i*3);
+  }
+  geom.setDrawRange(0, n);
+  geom.attributes.position.needsUpdate = true;
+  geom.attributes.color.needsUpdate = true;
+  geom.computeBoundingSphere();
+  $("hN").textContent = n;
+  // fps
+  const now = performance.now();
+  pcdCount++;
+  if(now - lastPcdT >= 1000){ fpsVal = pcdCount; pcdCount = 0; lastPcdT = now; $("fps").textContent = fpsVal; }
+}
+function updateOdom(d){
+  const [tx,ty,tz] = toThree(d.x, d.y, d.z);
+  odomMesh.position.set(tx,ty,tz);
+  trailPos.push([tx,ty,tz]); if(trailPos.length > 2000) trailPos.shift();
+  const arr = trail.geometry.attributes.position.array;
+  for(let i=0;i<trailPos.length;i++){ arr[i*3]=trailPos[i][0]; arr[i*3+1]=trailPos[i][1]; arr[i*3+2]=trailPos[i][2]; }
+  trail.geometry.setDrawRange(0, trailPos.length);
+  trail.geometry.attributes.position.needsUpdate = true;
+  $("hP").textContent = `${d.x.toFixed(2)}, ${d.y.toFixed(2)}, ${d.z.toFixed(2)}`;
+}
+function animate(){
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+// ---------------- WebSocket ----------------
+let ws = null, wantConnect = false, reconnectDelay = 1, demoTimer = null;
+function setConn(state){
+  const dot = $("dot"), lbl = $("connlbl");
+  dot.className = state==="ok"?"ok":(state==="bad"?"bad":"");
+  lbl.textContent = state==="ok"?"已连接":(state==="bad"?"未连接":"连接中…");
+}
+function toast(msg){ const t=$("toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove("show"),1600); }
+
+function connect(url){
+  stopDemo();
+  wantConnect = true; reconnectDelay = 1;
+  $("overlay").classList.add("hidden");
+  doConnect(url);
+}
+function doConnect(url){
+  setConn("");
+  try{ ws = new WebSocket(url); }catch(e){ setConn("bad"); scheduleReconnect(url); return; }
+  ws.onopen = ()=>{ setConn("ok"); toast("已连接"); reconnectDelay = 1; };
+  ws.onmessage = ev=>onMessage(ev.data);
+  ws.onclose = ()=>{ setConn("bad"); if(wantConnect) scheduleReconnect(url); };
+  ws.onerror = ()=>{ try{ws.close();}catch(e){} };
+}
+function scheduleReconnect(url){
+  if(!wantConnect) return;
+  toast(reconnectDelay+ "s 后重连…");
+  setTimeout(()=>doConnect(url), reconnectDelay*1000);
+  reconnectDelay = Math.min(reconnectDelay*2, 6);
+}
+function send(obj){ if(ws && ws.readyState===1){ ws.send(JSON.stringify(obj)); } }
+function onMessage(raw){
+  let m; try{ m = JSON.parse(raw); }catch(e){ return; }
+  const t = m.type;
+  if(t==="deviceInfo") applyDevice(m.data);
+  else if(t==="odom") updateOdom(m.data);
+  else if(t==="pcd") updatePcd(m.data.points || []);
+  else if(t==="img") { /* camera frame (off by default) */ }
+  else if(m.code===200 && Array.isArray(m.data)) renderFiles(m.data);
+  else if(t==="response") toast((m.cmd||"")+" → "+(m.status||"ok"));
+}
+function applyDevice(d){
+  if(!d) return;
+  $("sBat").textContent = d.battery ?? "—";
+  $("sVer").textContent = d.version ?? "—";
+  $("sStor").textContent = d.storageTotal ?? "—";
+  $("sUsed").textContent = (d.storagePercent ?? 0);
+  $("storefill").style.width = (d.storagePercent ?? 0) + "%";
+  $("title").textContent = "R3D · " + (d.deviceCode || "");
+}
+function renderFiles(list){
+  const box = $("files");
+  box.innerHTML = list.length ? "" : '<div class="fitem"><span class="nm">（暂无文件夹）</span></div>';
+  for(const f of list){
+    const el = document.createElement("div"); el.className="fitem";
+    el.innerHTML = `<span class="nm">${f.name}</span><span class="ct">${f.createTime||""}</span>`;
+    box.appendChild(el);
+  }
+  box.classList.add("open");
+}
+
+// ---------------- demo mode (no device) ----------------
+let demoT = 0;
+function startDemo(){
+  wantConnect = false;
+  if(ws){ try{ws.close();}catch(e){} ws=null; }
+  $("overlay").classList.add("hidden");
+  setConn("ok"); applyDevice({battery:78, version:"R3D_DEMO", deviceCode:"DEMO", storageTotal:128, storageUsed:41, storagePercent:32});
+  toast("演示模式");
+  if(demoTimer) clearInterval(demoTimer);
+  demoT = 0;
+  demoTimer = setInterval(()=>{
+    demoT += 0.1;
+    // synthetic rotating point structure, same shape as the C++ mock
+    const N = 7000, pts = new Array(N);
+    for(let i=0;i<N;i++){
+      const u = (2*Math.PI*i)/N;
+      const r = 5 + 1.5*Math.sin(6*u + demoT);
+      const ring = 0.6*Math.cos(8*u);
+      pts[i] = [
+        (r + ring*Math.cos(6*u))*Math.cos(u + demoT*0.5),
+        (r + ring*Math.cos(6*u))*Math.sin(u + demoT*0.5),
+        ring*Math.sin(6*u) + 0.4*Math.sin(3*u + demoT)
+      ];
+    }
+    updatePcd(pts);
+    updateOdom({x:0.6*demoT, y:Math.sin(0.3*demoT), z:0.2*Math.sin(0.7*demoT)});
+  }, 100);
+}
+function stopDemo(){ if(demoTimer){ clearInterval(demoTimer); demoTimer=null; } }
+
+// ---------------- UI wiring ----------------
+$("connectBtn").onclick = ()=>{ const u=$("url").value.trim()||"ws://localhost:8765/data"; connect(u); };
+$("demoBtn").onclick = startDemo;
+$("startBtn").onclick = ()=>{ send({cmd:"startRecord"}); toast("开始建图…"); };
+$("stopBtn").onclick = ()=>{ send({cmd:"stopRecord"}); };
+$("filesBtn").onclick = ()=>{ const b=$("files"); if(b.classList.contains("open")){ b.classList.remove("open"); } else { send({type:"GET_FILE_LIST"}); } };
+$("settingsBtn").onclick = ()=>{ wantConnect=false; stopDemo(); if(ws){try{ws.close();}catch(e){}} $("overlay").classList.remove("hidden"); };
+
+init3d();
+</script>
+</body>
+</html>

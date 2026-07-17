@@ -3,6 +3,7 @@
 
 #include "r3d/bridge_launcher.hpp"
 
+#include <fcntl.h>      // open() for headless log redirection
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -29,27 +30,49 @@ BridgeLauncher::~BridgeLauncher() { stop(); }
 
 void BridgeLauncher::start() {
     if (pid_ > 0) return;  // already launched
-    // Mirror Auto_start.py: gnome-terminal -- bash -c 'source ROS + ws && ros2 run ...; exec bash'
-    const std::string cmd =
+    // Source ROS + the workspace, then `exec ros2 run ...` so the node replaces
+    // bash and pid_ tracks the launcher process itself. (The trailing
+    // `; exec bash` is added only for the interactive terminal-window path.)
+    const std::string ros_cmd =
         std::string("source ") + config::ROS_SETUP +
         " && source " + ros_ws() + "/install/setup.bash" +
-        " && ros2 run " + config::BRIDGE_PACKAGE + " " + config::BRIDGE_NODE +
-        "; exec bash";
+        " && exec ros2 run " + config::BRIDGE_PACKAGE + " " + config::BRIDGE_NODE;
 
-    log::info("[bridge] 启动 r3d_bringup bridge（gnome-terminal）...");
+    // Prefer an interactive gnome-terminal window on dev desktops; fall back to a
+    // detached, logged bash session on headless hosts (no gnome-terminal / no
+    // DISPLAY) — which is exactly where the bridge must run on the real device.
+    const bool have_display = std::getenv("DISPLAY") || std::getenv("WAYLAND_DISPLAY");
+    const bool have_terminal = have_display && access(config::TERMINAL_CMD, X_OK) == 0;
+
+    log::info(std::string("[bridge] 启动 r3d_bringup bridge（") +
+              (have_terminal ? "gnome-terminal" : "headless") + ")...");
     pid_t pid = fork();
     if (pid < 0) {
         log::warn("[bridge] fork 失败: " + std::string(std::strerror(errno)));
         return;
     }
     if (pid == 0) {
-        execlp(config::TERMINAL_CMD, config::TERMINAL_CMD, "--",
-               "bash", "-c", cmd.c_str(), (char*)nullptr);
-        std::perror("[bridge] execlp gnome-terminal");
+        setsid();  // own session: survives r3d_main, needs no controlling tty
+        if (have_terminal) {
+            // keep the window open after exit for debugging
+            const std::string cmd = ros_cmd + "; exec bash";
+            execlp(config::TERMINAL_CMD, config::TERMINAL_CMD, "--",
+                   "bash", "-c", cmd.c_str(), (char*)nullptr);
+        } else {
+            // headless: send the node's output to a log file instead of a window
+            int fd = open(config::BRIDGE_LOG, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd >= 0) {
+                dup2(fd, STDOUT_FILENO);
+                dup2(fd, STDERR_FILENO);
+                close(fd);
+            }
+            execlp("bash", "bash", "-c", ros_cmd.c_str(), (char*)nullptr);
+        }
+        std::perror("[bridge] execlp");
         _exit(127);
     }
     pid_ = pid;
-    log::info(std::string("[bridge] gnome-terminal 已启动 pid=") + std::to_string(pid));
+    log::info(std::string("[bridge] bridge 已启动 pid=") + std::to_string(pid));
 }
 
 void BridgeLauncher::stop() {

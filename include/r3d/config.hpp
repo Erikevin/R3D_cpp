@@ -95,6 +95,7 @@ inline constexpr const char* ROS_WS_DEFAULT = "/home/jetson/R3D_cpp/ros2_ws";
 inline constexpr const char* ROS_SETUP      = "/opt/ros/humble/setup.bash";
 inline constexpr const char* BRIDGE_PACKAGE = "r3d_bringup";
 inline constexpr const char* BRIDGE_NODE    = "r3d_ws_bridge";
+inline constexpr const char* BRIDGE_LOG     = "/tmp/r3d_bridge.log";  // headless-mode stdout/stderr
 
 // ---- System state ----------------------------------------------------------
 enum class State {

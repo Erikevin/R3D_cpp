@@ -30,6 +30,17 @@ BridgeLauncher::~BridgeLauncher() { stop(); }
 
 void BridgeLauncher::start() {
     if (pid_ > 0) return;  // already launched
+    // Fail fast if the workspace can't be sourced. A wrong path here used to
+    // silently abort the command chain inside the child (source failed → ros2
+    // run never ran) while the parent still logged "started". Override via
+    // $R3D_ROS_WS (dev box vs Jetson deploy path).
+    const std::string setup_bash = ros_ws() + "/install/setup.bash";
+    if (access(setup_bash.c_str(), R_OK) != 0) {
+        log::error("[bridge] workspace setup 不可读: " + setup_bash +
+                   "（用 " + std::string(config::ROS_WS_ENV) +
+                   "=<ros2_ws 路径> 覆盖默认值），放弃启动");
+        return;
+    }
     // Source ROS + the workspace, then `exec ros2 run ...` so the node replaces
     // bash and pid_ tracks the launcher process itself. (The trailing
     // `; exec bash` is added only for the interactive terminal-window path.)
@@ -53,26 +64,57 @@ void BridgeLauncher::start() {
     }
     if (pid == 0) {
         setsid();  // own session: survives r3d_main, needs no controlling tty
+        // Both branches redirect the launcher process's own stdout/stderr to
+        // BRIDGE_LOG. On success this stays near-empty; on failure (e.g. SSH
+        // with no X authority / D-Bus, where gnome-terminal can't open a window)
+        // the real error lands here instead of being lost.
+        int fd = open(config::BRIDGE_LOG, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) {
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
         if (have_terminal) {
             // keep the window open after exit for debugging
             const std::string cmd = ros_cmd + "; exec bash";
             execlp(config::TERMINAL_CMD, config::TERMINAL_CMD, "--",
                    "bash", "-c", cmd.c_str(), (char*)nullptr);
         } else {
-            // headless: send the node's output to a log file instead of a window
-            int fd = open(config::BRIDGE_LOG, O_WRONLY | O_CREAT | O_APPEND, 0644);
-            if (fd >= 0) {
-                dup2(fd, STDOUT_FILENO);
-                dup2(fd, STDERR_FILENO);
-                close(fd);
-            }
             execlp("bash", "bash", "-c", ros_cmd.c_str(), (char*)nullptr);
         }
         std::perror("[bridge] execlp");
         _exit(127);
     }
     pid_ = pid;
-    log::info(std::string("[bridge] bridge 已启动 pid=") + std::to_string(pid));
+
+    // gnome-terminal runs in server mode: the launcher process exits quickly
+    // (code 0) once it has handed off to the server, so reaping a fast exit is
+    // normal and does NOT mean the node failed. A non-zero exit means the
+    // launch itself failed (SSH / no graphics → window never opened → ros2 run
+    // never ran). In the headless branch pid_ is the node itself, which stays
+    // alive and is therefore NOT reaped here.
+    int status = 0;
+    bool reaped = false;
+    for (int i = 0; i < 20; ++i) {  // poll up to ~1s; return as soon as it exits
+        if (waitpid(pid_, &status, WNOHANG) != 0) { reaped = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    if (reaped) {
+        int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        pid_ = -1;  // launcher reaped; the real node (if any) is cleaned via stop()'s pkill
+        if (code == 0) {
+            log::info("[bridge] bridge 启动器已正常移交（gnome-terminal server 模式）；"
+                      "完整日志见 " + std::string(config::BRIDGE_LOG));
+        } else {
+            log::error("[bridge] bridge 启动失败（退出码=" + std::to_string(code) +
+                       "）。SSH/无图形会话下常因 gnome-terminal 缺 X 授权或 D-Bus 打不开窗口；"
+                       "真实报错见 " + std::string(config::BRIDGE_LOG));
+        }
+    } else {
+        log::info(std::string("[bridge] bridge 已派生 pid=") +
+                  std::to_string(pid_) + " 并持续运行；若桌面未见窗口，请查 " +
+                  std::string(config::BRIDGE_LOG));
+    }
 }
 
 void BridgeLauncher::stop() {

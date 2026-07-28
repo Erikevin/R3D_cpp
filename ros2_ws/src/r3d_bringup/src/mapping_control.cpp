@@ -179,21 +179,21 @@ bool MappingControl::write_shared_cmd(int value) {
 
 // ---- terminal lifecycle ----------------------------------------------------
 // Exact bash source/launch strings from web_a.py (jetson deploy target).
+// start_mapping_commands() 在 gnome-terminal 里执行；终端继承 r3d_ws_bridge 的 cwd，
+// 故工作区用相对路径 "ros2_ws/install/setup.bash" —— 桥必须从 ros2_ws 的父目录启动。
+// Livox / LIO-SAM 需其各自包已装入该 ros2_ws，否则对应终端会报 "package not found"。
 static const char* kCmdLivox =
     "source /opt/ros/humble/setup.bash && source ~/.bashrc && "
-    //"source /home/jetson/my_robot/install/setup.bash && "
-    //"ros2 launch livox_ros_driver2 msg_MID360_launch.py; exec bash"
-    ;
+    "source ros2_ws/install/setup.bash && "
+    "ros2 launch livox_ros_driver2 msg_MID360_launch.py; exec bash";
 static const char* kCmdLioSam =
     "source /opt/ros/humble/setup.bash && source ~/.bashrc && "
-    //"source /home/jetson/my_robot/install/setup.bash && "
-    //"ros2 launch lio_sam run.launch.py; exec bash";
-    ;
+    "source ros2_ws/install/setup.bash && source /root/my_robot_x/install/local_setup.bash"
+    "ros2 launch lio_sam run.launch.py; exec bash";
 static const char* kCmdCamera =
     "source /opt/ros/humble/setup.bash && source ~/.bashrc && "
-    //"source /home/jetson/my_robot/install/setup.bash && "
-    //"python3 /home/jetson/Desktop/R3D/camera/camera_two_value.py; exec bash";
-    ;
+    "source ros2_ws/install/setup.bash && "
+    "ros2 run r3d_bringup image_odom_recorder; exec bash";
 
 void MappingControl::start_mapping_commands() {
   std::vector<std::string> local;

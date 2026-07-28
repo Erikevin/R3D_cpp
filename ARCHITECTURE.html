@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>R3D 系统架构 · 三大模块业务与数据流转</title>
+<style>
+  :root{
+    --bg:#F6F8FB; --panel:#FFFFFF; --ink:#0F172A; --sub:#51607A; --faint:#8A97AD;
+    --line:#E3E9F2; --line2:#D2DBE8;
+    --hw:#0E7C7A;  --hw-bg:#E7F6F4; --hw-bd:#9DD9D3;   /* 硬件 青绿 */
+    --r3:#2150D9;  --r3-bg:#ECF1FE; --r3-bd:#AEC4F6;   /* r3d 蓝 */
+    --lio:#7A45D6; --lio-bg:#F2ECFB; --lio-bd:#C6B0F2; /* lio 紫 */
+    --ctrl:#D9602B; --ctrl-bg:#FCEFE3;   /* 控制流 橙 */
+    --data:#1E9E6A; --data-bg:#E4F6EE;   /* 数据流 绿 */
+    --file:#9A6A00; --file-bg:#FBF1D9;   /* 解耦文件/共享 褐 */
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{
+    font-family:"PingFang SC","Microsoft YaHei","Source Han Sans SC","Noto Sans CJK SC","Segoe UI",system-ui,sans-serif;
+    background:var(--bg); color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+  }
+  body{ padding:34px 30px 40px; }
+  .wrap{ width:1680px; margin:0 auto; }
+
+  /* ---------- 顶部标题 ---------- */
+  .head{ text-align:center; margin-bottom:22px; }
+  .head h1{ font-size:30px; letter-spacing:1px; font-weight:800; }
+  .head h1 .a{ color:var(--hw);} .head h1 .b{ color:var(--r3);} .head h1 .c{ color:var(--lio);}
+  .head p{ color:var(--sub); font-size:14px; margin-top:8px; }
+
+  /* ---------- 三列主网格 ---------- */
+  .grid{
+    display:grid;
+    grid-template-columns: 1fr 150px 1.35fr 150px 1fr;
+    gap:0;
+    align-items:stretch;
+  }
+
+  /* ---------- 模块大卡 ---------- */
+  .mod{
+    border:1.5px solid var(--line2); border-radius:16px;
+    background:linear-gradient(180deg,#fff, #FBFCFE);
+    overflow:hidden; display:flex; flex-direction:column;
+    box-shadow:0 1px 0 rgba(15,30,60,.03);
+  }
+  .mod .mh{
+    padding:14px 18px; color:#fff; display:flex; align-items:center; gap:11px;
+  }
+  .mod .mh .ic{
+    width:30px; height:30px; border-radius:8px; background:rgba(255,255,255,.22);
+    display:flex; align-items:center; justify-content:center; font-size:17px; font-weight:800;
+  }
+  .mod .mh .tt{ font-size:18px; font-weight:800; letter-spacing:.5px;}
+  .mod .mh .sub{ font-size:11px; opacity:.85; font-weight:500;}
+  .mod .mc{ padding:14px 14px 16px; display:flex; flex-direction:column; gap:11px; flex:1;}
+
+  .mod.hw .mh{ background:linear-gradient(135deg,#0E7C7A,#139A8F);}
+  .mod.r3 .mh{ background:linear-gradient(135deg,#2150D9,#3E6BF0);}
+  .mod.lio .mh{ background:linear-gradient(135deg,#7A45D6,#9564E8);}
+
+  /* ---------- 组件小卡 ---------- */
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:11px;
+    padding:11px 13px; position:relative;
+  }
+  .card::before{
+    content:""; position:absolute; left:0; top:10px; bottom:10px; width:3px; border-radius:3px;
+  }
+  .mod.hw  .card::before{ background:var(--hw);}
+  .mod.r3  .card::before{ background:var(--r3);}
+  .mod.lio .card::before{ background:var(--lio);}
+  .card .ct{ font-size:13.5px; font-weight:800; display:flex; align-items:center; gap:7px; margin-bottom:5px;}
+  .card .ct .pill{ font-size:10px; font-weight:700; color:#fff; padding:2px 7px; border-radius:20px; letter-spacing:.3px;}
+  .mod.hw  .ct .pill{ background:var(--hw);}
+  .mod.r3  .ct .pill{ background:var(--r3);}
+  .mod.lio .ct .pill{ background:var(--lio);}
+  .card .cd{ font-size:11.5px; color:var(--sub); line-height:1.62; }
+  .card .cd b{ color:var(--ink); font-weight:700;}
+  .card .cd code{ font-family:"JetBrains Mono",ui-monospace,Consolas,monospace; font-size:11px;
+    background:#F1F4F9; color:#33425B; padding:1px 5px; border-radius:4px;}
+  .kv{ display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;}
+  .kv span{ font-size:10.5px; background:#F4F7FB; border:1px solid var(--line); color:#42506A;
+    padding:2px 7px; border-radius:5px;}
+
+  /* ---------- 模块间通道（接口箭头） ---------- */
+  .lane{
+    display:flex; flex-direction:column; justify-content:center; align-items:stretch;
+    padding:18px 4px; gap:9px;
+  }
+  .iface{
+    background:var(--panel); border:1px solid var(--line2); border-radius:10px;
+    padding:8px 9px; display:flex; flex-direction:column; gap:3px;
+    box-shadow:0 1px 0 rgba(15,30,60,.03);
+  }
+  .iface .ar{ font-size:12px; font-weight:800; display:flex; align-items:center; gap:6px; line-height:1.1;}
+  .iface .lb{ font-size:10.5px; color:var(--sub); line-height:1.4;}
+  .iface.ctrl{ border-top:3px solid var(--ctrl);}
+  .iface.data{ border-top:3px solid var(--data);}
+  .iface.file{ border-top:3px solid var(--file);}
+  .iface.ctrl .ar{ color:var(--ctrl);}
+  .iface.data .ar{ color:var(--data);}
+  .iface.file .ar{ color:var(--file);}
+  .arrow{ font-size:15px; letter-spacing:-1px;}
+  .iface code{ font-family:"JetBrains Mono",ui-monospace,Consolas,monospace; font-size:10px;
+    background:#F1F4F9; padding:0 4px; border-radius:3px; color:#33425B;}
+
+  /* ---------- 底部：共享资源条 ---------- */
+  .bus{
+    margin-top:20px; border:1.5px dashed var(--file); background:var(--file-bg);
+    border-radius:14px; padding:13px 18px; display:flex; align-items:center; gap:18px;
+  }
+  .bus .bt{ font-size:13px; font-weight:800; color:var(--file); white-space:nowrap;}
+  .bus .bi{ font-size:11.5px; color:#6B5210; line-height:1.5;}
+  .bus .bi b{ color:#3D2F00;}
+
+  /* ---------- 底部：三条业务流 + 图例 ---------- */
+  .flows{
+    margin-top:18px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px;
+  }
+  .flow{
+    background:var(--panel); border:1px solid var(--line2); border-radius:13px; padding:14px 16px;
+  }
+  .flow .ft{ font-size:13.5px; font-weight:800; margin-bottom:8px; display:flex; align-items:center; gap:8px;}
+  .flow .fn{ width:22px; height:22px; border-radius:6px; color:#fff; font-size:12px; display:flex; align-items:center; justify-content:center; font-weight:800;}
+  .flow ol{ margin:0; padding-left:20px;}
+  .flow li{ font-size:11.5px; color:var(--sub); line-height:1.7; margin-bottom:2px;}
+  .flow li b{ color:var(--ink);}
+  .flow li code{ font-family:"JetBrains Mono",ui-monospace,Consolas,monospace; font-size:10.5px;
+    background:#F1F4F9; padding:1px 4px; border-radius:3px; color:#33425B;}
+
+  .legend{
+    margin-top:18px; display:flex; justify-content:center; gap:26px; flex-wrap:wrap;
+    font-size:12px; color:var(--sub);
+  }
+  .legend span{ display:inline-flex; align-items:center; gap:7px;}
+  .swatch{ width:22px; height:0; border-top:3px solid; display:inline-block;}
+  .legend .l-ctrl{ border-color:var(--ctrl);}
+  .legend .l-data{ border-color:var(--data);}
+  .legend .l-file{ border-style:dashed; border-color:var(--file);}
+
+  .foot{ text-align:center; color:var(--faint); font-size:11px; margin-top:18px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="head">
+    <h1><span class="a">硬件设计</span> · <span class="b">R3D 扫描系统</span> · <span class="c">LIO-SAM</span></h1>
+    <p>手持式 3D 建图设备 — 三大模块各自业务 · 模块间数据与控制流转（基于真实代码梳理）</p>
+  </div>
+
+  <div class="grid">
+
+    <!-- =================== 模块 1：硬件设计 =================== -->
+    <div class="mod hw">
+      <div class="mh">
+        <div class="ic">H</div>
+        <div><div class="tt">① 硬件设计</div><div class="sub">物理外设 · 电源板协议 · 传感器</div></div>
+      </div>
+      <div class="mc">
+
+        <div class="card">
+          <div class="ct">电源板 MCU <span class="pill">UART</span></div>
+          <div class="cd">
+            串口 <code>/dev/ttyS2 @9600 8N1</code>，9 字节定长帧 <code>[5C][cmd][×5][0D][0A]</code><br>
+            <b>→ Jetson</b>：<code>0x31</code> 周期遥测（电压mV / 温度 / 关机请求 / 电量%）<br>
+            <b>← Jetson</b>：<code>0x32</code> 风扇 · <code>0x33</code> 允许关机 · <code>0x34</code> 雷达电源
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ct">Livox MID-360 激光雷达</div>
+          <div class="cd">
+            非重复扫描 LiDAR + 内置 IMU；由电源板继电器上/下电<br>
+            驱动持续把<b>硬件纳秒时戳</b>写入共享文件（供相机对齐）
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ct">双路 USB 相机</div>
+          <div class="cd">
+            <code>/dev/video0</code> · <code>/dev/video2</code>，原生 MJPG（V4L2 零编码直出）
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ct">GPIO / LED 指示 <span class="pill">wiringPi</span></div>
+          <div class="cd">
+            绿灯 wp1（运行）/ 红灯 wp0（错误·低电）/ 扫描态绿光 1Hz 闪<br>
+            <b>后端</b>：WiringPiGpio（实机）/ MockGpio（开发），<code>USE_WIRINGPI</code> 宏切换
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ct">雷达电源继电器</div>
+          <div class="cd">受电源板 <code>0x34</code> 控制，决定 Livox 上下电</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- =================== 通道 1：硬件 ↔ R3D =================== -->
+    <div class="lane">
+      <div class="iface data">
+        <div class="ar"><span class="arrow">◀━━</span> UART 遥测</div>
+        <div class="lb">电源板 <code>0x31</code> 帧流（电压/温度/电量）→ r3d_main 解析</div>
+      </div>
+      <div class="iface ctrl">
+        <div class="ar"><span class="arrow">━━▶</span> UART 命令</div>
+        <div class="lb">r3d_main → 电源板：<code>0x32</code> 风扇 · <code>0x33</code> 关机 · <code>0x34</code> 雷达电源</div>
+      </div>
+      <div class="iface data">
+        <div class="ar"><span class="arrow">◀━━</span> 相机帧</div>
+        <div class="lb"><code>/dev/video0,2</code> MJPG → image_odom_recorder 直抓</div>
+      </div>
+    </div>
+
+    <!-- =================== 模块 2：R3D 扫描系统 =================== -->
+    <div class="mod r3">
+      <div class="mh">
+        <div class="ic">R</div>
+        <div><div class="tt">② R3D 扫描系统</div><div class="sub">控制 · 通信 · 录制存档（居中调度）</div></div>
+      </div>
+      <div class="mc">
+
+        <div class="card">
+          <div class="ct">手机 App / Web 前端 <span class="pill">用户层</span></div>
+          <div class="cd">
+            Three.js 点云渲染（前端 <code>index.html</code>，内置 r128）<br>
+            连接 <code>ws://设备IP:8765/data</code>；发 <b>startRecord / stopRecord</b>，实时收 odom·pcd·img
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ct">r3d_ws_bridge <span class="pill">ROS 节点</span></div>
+          <div class="cd">
+            节点名 <code>ws_sync_sender</code>；boost::beast WS 服务端 <code>:8765/data</code>（单线程）<br>
+            <b>订阅</b> lio_sam：<code>odometry</code> / <code>cloud_registered</code>（BEST_EFFORT）<br>
+            <b>try_sync</b> 50ms 配对 odom↔lidar（&lt;0.05s）→ 每连接 50ms tick 推流（pcd 10Hz）<br>
+            <b>命令分发</b>：startRecord → 写 IPC + 拉起 ROS 栈；stopRecord → 关窗口 + 写 IPC
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ct">r3d_main <span class="pill">设备主控·无ROS</span></div>
+          <div class="cd">
+            <b>状态机</b>：INIT → RUN ⇄ SCAN →（ERROR / SHUTDOWN）<br>
+            <b>IPC 线程</b>：100ms 轮询 <code>/tmp/shared_cmd.txt</code> → start/stop_radar<br>
+            <b>驱动</b>：UART 控电源板（雷达上/下电）、GPIO 控 LED；bridge_launcher 启动 ws_bridge<br>
+            <b>关机</b>：电量&lt;10% / 电源板请求 → latch → <code>execlp("shutdown -h now")</code>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ct">image_odom_recorder <span class="pill">录制存档</span></div>
+          <div class="cd">
+            订阅 <code>/lio_sam/mapping/odometry</code> → <code>odom.txt</code><br>
+            读 <code>~/timeshare</code> 雷达时戳作"主时钟"触发双相机 → <code>images/cam0|1/&lt;ns&gt;.jpg</code><br>
+            fork <code>ros2 bag record</code> 录 <code>/livox/imu /livox/lidar</code> → rosbag2/
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ct">r3d_daemon <span class="pill">看门狗</span></div>
+          <div class="cd">独立进程；r3d_main 崩溃 <code>3s</code> 后自动 respawn；正常退出则同步退出</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- =================== 通道 2：R3D ↔ LIO-SAM =================== -->
+    <div class="lane">
+      <div class="iface ctrl">
+        <div class="ar"><span class="arrow">━━▶</span> launch 命令</div>
+        <div class="lb">ws_bridge 用 gnome-terminal + xdotool 拉起 livox_driver2 / lio_sam / recorder</div>
+      </div>
+      <div class="iface data">
+        <div class="ar"><span class="arrow">◀━━</span> ROS 话题</div>
+        <div class="lb"><code>/lio_sam/mapping/odometry</code>（位姿）+ <code>cloud_registered</code>（点云）→ ws_bridge 推流 / recorder 存档</div>
+      </div>
+      <div class="iface file">
+        <div class="ar"><span class="arrow">◀━━</span> 雷达时戳</div>
+        <div class="lb"><code>~/timeshare</code> 16B mmap（livox 驱动写）→ recorder 读，对齐相机</div>
+      </div>
+    </div>
+
+    <!-- =================== 模块 3：LIO-SAM =================== -->
+    <div class="mod lio">
+      <div class="mh">
+        <div class="ic">L</div>
+        <div><div class="tt">③ LIO-SAM</div><div class="sub">外部 ROS 包 · 定位建图核心</div></div>
+      </div>
+      <div class="mc">
+
+        <div class="card">
+          <div class="ct">livox_ros_driver2 <span class="pill">外部包</span></div>
+          <div class="cd">
+            <code>msg_MID360_launch.py</code> 启动；直读 Livox 硬件<br>
+            发布 <code>/livox/lidar</code>（CustomMsg 点云）· <code>/livox/imu</code><br>
+            <b>同时</b>把硬件纳秒时戳写入 <code>~/timeshare</code>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ct">lio_sam <span class="pill">SLAM 核心·外部包</span></div>
+          <div class="cd">
+            <code>run.launch.py</code> 启动；LIO 紧耦合里程计 + 因子图建图<br>
+            消费 <code>/livox/lidar</code> + <code>/livox/imu</code><br>
+            <b>输出</b>：<code>/lio_sam/mapping/odometry</code>（全局位姿）<br>
+            <b>输出</b>：<code>/lio_sam/mapping/cloud_registered</code>（世界系配准点云）
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ct">模块边界说明</div>
+          <div class="cd">
+            仓库内<b>无源码 / 无 launch / 无参数 yaml</b>；与 R3D 系统仅靠<br>
+            <b>4 个话题名</b>解耦：odometry · cloud_registered · /livox/lidar · /livox/imu
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="ct">mock_publisher <span class="pill">调试</span></div>
+          <div class="cd">无雷达时发布同话题假 odom+pcd，供 headless 测试</div>
+        </div>
+
+      </div>
+    </div>
+
+  </div><!-- /grid -->
+
+  <!-- ---------- 底部共享资源条 ---------- -->
+  <div class="bus">
+    <div class="bt">⇆ 两个解耦边界</div>
+    <div class="bi">
+      <b>① 文件 IPC</b> <code>/tmp/shared_cmd.txt</code>（<code>{"cmd":1|0}</code>，原子 tmp+rename 写）—
+      <b>r3d_ws_bridge 写 → r3d_main 读</b>：手机命令跨进程传到设备主控，触发雷达上/下电。
+      &nbsp;｜&nbsp;
+      <b>② 共享时戳</b> <code>~/timeshare</code>（16B mmap，int64 高/低 = Livox 纳秒）—
+      <b>livox 驱动写 → image_odom_recorder 读</b>：让每张照片打上真实雷达硬件时间，事后与点云/里程计对齐。
+    </div>
+  </div>
+
+  <!-- ---------- 三条核心业务流 ---------- -->
+  <div class="flows">
+
+    <div class="flow">
+      <div class="ft"><span class="fn" style="background:var(--ctrl)">1</span>开机建图控制流（跨三模块）</div>
+      <ol>
+        <li>手机发 <code>startRecord</code> → ws_bridge</li>
+        <li>ws_bridge 写 <code>shared_cmd=1</code> <b>＋</b> 开 3 终端拉起 livox / lio_sam / recorder</li>
+        <li>r3d_main 读到 IPC → <code>start_radar</code> → UART <code>0x34</code> 雷达电源 ON</li>
+        <li>电源板继电器给 <b>Livox 上电</b>，点云开始吐出</li>
+        <li>lio_sam 跑起来，ws_bridge <code>mapping_ready</code> 后开始推流</li>
+      </ol>
+    </div>
+
+    <div class="flow">
+      <div class="ft"><span class="fn" style="background:var(--data)">2</span>实时数据流（硬件→手机）</div>
+      <ol>
+        <li>Livox 点云+IMU → livox_driver2 → <code>/livox/*</code></li>
+        <li>lio_sam 紧耦合 → <code>odometry</code> + <code>cloud_registered</code></li>
+        <li>ws_bridge 订阅 → <b>try_sync</b> 时间配对</li>
+        <li>WS <code>:8765/data</code> 50ms tick 推 odom(20Hz)·pcd(10Hz)</li>
+        <li>手机 Three.js 渲染点云 + 位姿轨迹</li>
+      </ol>
+    </div>
+
+    <div class="flow">
+      <div class="ft"><span class="fn" style="background:var(--file)">3</span>离线存档流（建图产物）</div>
+      <ol>
+        <li>recorder 读 <code>~/timeshare</code> 雷达时戳作主时钟</li>
+        <li>同一时戳触发 <b>双相机</b>抓帧 → <code>images/cam0|1/&lt;ns&gt;.jpg</code></li>
+        <li>订阅 lio_sam <code>odometry</code> → <code>odom.txt</code></li>
+        <li>fork <code>ros2 bag record</code> → <code>rosbag2/</code></li>
+        <li>全部落 <code>~/Desktop/save_pcd/&lt;时间戳&gt;/</code>，事后对齐重建</li>
+      </ol>
+    </div>
+
+  </div>
+
+  <!-- ---------- 图例 ---------- -->
+  <div class="legend">
+    <span><span class="swatch l-ctrl"></span> 控制流（命令 / 触发）</span>
+    <span><span class="swatch l-data"></span> 数据流（遥测 / 话题 / 媒体）</span>
+    <span><span class="swatch l-file"></span> 文件 / 共享内存解耦</span>
+    <span>◀━━ 向左流动　｜　━━▶ 向右流动</span>
+  </div>
+
+  <div class="foot">R3D_cpp · 基于 src/ 与 ros2_ws/src/r3d_bringup/ 真实代码梳理 · 三大模块 = 硬件设计 / R3D 扫描系统 / LIO-SAM</div>
+
+</div>
+</body>
+</html>

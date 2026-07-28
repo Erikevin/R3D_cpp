@@ -17,30 +17,13 @@ inline constexpr bool DEBUG_SKIP_CAMERA = true;
 inline const std::string UART_PORT   = "/dev/ttyS2";
 inline constexpr int      UART_BAUD  = 9600;
 inline constexpr int      UART_TIMEOUT_SEC = 1;   // logical timeout (not raw read)
-// termios raw-read polling: VMIN=0/VTIME=1 → 0.1 s poll so the rx loop can spin.
-inline constexpr int      UART_VMIN  = 0;
-inline constexpr int      UART_VTIME = 1;
 
-// ---- GPIO (BOARD numbering, as in config.py) -------------------------------
-inline constexpr int GREEN_LED = 19;   // also used as the scan/blink pin
-inline constexpr int RED_LED   = 21;
-inline constexpr int FAN_PIN   = 2;
-inline constexpr int PWM_SCAN  = 19;   // same physical pin as GREEN_LED
-
-// BOARD pin -> libgpiod line number map.
-// !! Board-specific: verify against your Jetson model's gpio line names
-//    (`gpioinfo`). The values below are placeholders for Orin Nano dev kit.
-struct PinMap { int board; const char* chip; unsigned line; };
-inline constexpr PinMap GPIO_MAP[] = {
-    {19, "gpiochip0", 79},   // GREEN_LED / PWM_SCAN
-    {21, "gpiochip0", 14},   // RED_LED
-    { 2, "gpiochip0", 70},   // FAN_PIN
-};
-
-// ---- GPIO sysfs / libgpiod details ----------------------------------------
-inline constexpr const char* SYSFS_GPIO_BASE       = "/sys/class/gpio";
-inline constexpr const char* GPIO_CONSUMER         = "r3d";  // libgpiod line consumer label
-inline constexpr int         GPIO_EXPORT_SETTLE_MS = 100;    // settle wait after sysfs export
+// ---- GPIO (wiringPi numbering, Orange Pi) ---------------------------------
+// Verify against the target board with `gpio readall`.
+inline constexpr int GREEN_LED = 1;   // wiringPi 1 — also used as the scan/blink pin
+inline constexpr int RED_LED   = 0;   // wiringPi 0
+inline constexpr int FAN_PIN   = 2;   // wiringPi 2 (reserved; not yet initialized)
+inline constexpr int PWM_SCAN  = 1;   // same physical pin as GREEN_LED
 
 // ---- System timing ---------------------------------------------------------
 inline constexpr int BOOT_WAIT_SEC           = 2;
@@ -59,19 +42,31 @@ inline constexpr int DAEMON_RESTART_SEC      = 3;    // respawn wait after r3d_m
 // ---- Protection thresholds -------------------------------------------------
 inline constexpr int BAT_LOW     = 10;
 inline constexpr int BAT_PROTECT = 5;
+inline constexpr int FAN_TEMP_THRESHOLD = 45;  // °C — auto fan on when enclosure temp exceeds this
 
 // ---- Protocol frame (power board) -----------------------------------------
-inline constexpr std::uint8_t FRAME_HEADER           = 0x5C;
-inline constexpr std::uint8_t SHUTDOWN_CMD_BYTE      = 0x31; // board→Jetson shutdown request
-inline constexpr int          SHUTDOWN_PAYLOAD_OFFSET = 5;   // payload byte that matters
-inline constexpr std::uint8_t SHUTDOWN_PAYLOAD_VALUE  = 1;   // data[offset]==1 → shutdown
-inline const std::string      FRAME_END = std::string("\x0D\x0A", 2);
+// All frames are 9 bytes: [0x5C][cmd][payload×5][0x0D][0x0A].
+inline constexpr std::uint8_t FRAME_HEADER = 0x5C;
+inline constexpr int          FRAME_LEN    = 9;
+inline const std::string      FRAME_END    = std::string("\x0D\x0A", 2);  // bytes 8,9 (0x0D 0x0A)
 
-inline const std::string FAN_ON         = "\x5C\x32\x01\x00\x00\x00\x00\x0D\x0A";
-inline const std::string FAN_OFF        = "\x5C\x32\x00\x00\x00\x00\x00\x0D\x0A";
-inline const std::string ALLOW_SHUTDOWN = "\x5C\x33\x01\x00\x00\x00\x00\x0D\x0A";
-inline const std::string RADAR_ON       = "\x5C\x34\x01\x00\x00\x00\x00\x0D\x0A";
-inline const std::string RADAR_OFF      = "\x5C\x34\x00\x00\x00\x00\x00\x0D\x0A";
+// 0x31 = power-board→main cyclic telemetry report (sent continuously). Field
+// offsets are relative to the 0x5C header at index 0.
+inline constexpr std::uint8_t TELEMETRY_CMD            = 0x31;
+inline constexpr int          TELEMETRY_VOLT_H_OFF     = 2;    // voltage high byte
+inline constexpr int          TELEMETRY_VOLT_L_OFF     = 3;    // voltage low byte (V=(H<<8)|L, unit TBD)
+inline constexpr int          TELEMETRY_TEMP_OFF       = 4;    // enclosure temperature
+inline constexpr int          TELEMETRY_POWER_OFF_OFF  = 5;    // >0 ⇒ board requests shutdown
+inline constexpr int          TELEMETRY_BATT_OFF       = 6;    // battery level 0-100 (%)
+
+// NOTE: must use the (const char*, count) constructor — the bytes contain
+// embedded 0x00, so the plain string(const char*) form would truncate at the
+// first null (e.g. FAN_ON would shrink from 9 to 3 bytes: "5C 32 01").
+inline const std::string FAN_ON         = std::string("\x5C\x32\x01\x00\x00\x00\x00\x0D\x0A", 9);
+inline const std::string FAN_OFF        = std::string("\x5C\x32\x00\x00\x00\x00\x00\x0D\x0A", 9);
+inline const std::string ALLOW_SHUTDOWN = std::string("\x5C\x33\x01\x00\x00\x00\x00\x0D\x0A", 9);
+inline const std::string RADAR_ON       = std::string("\x5C\x34\x01\x00\x00\x00\x00\x0D\x0A", 9);
+inline const std::string RADAR_OFF      = std::string("\x5C\x34\x00\x00\x00\x00\x00\x0D\x0A", 9);
 
 // ---- IPC -------------------------------------------------------------------
 // Shared command file (bridge writes, r3d_main reads). Holds {"cmd": N}.
@@ -91,7 +86,7 @@ inline constexpr const char* SHUTDOWN_BIN     = "shutdown";      // execlp("shut
 // that sources ROS + the workspace and runs the bridge node. The ROS workspace
 // is overridable via $R3D_ROS_WS (dev box vs Jetson deploy path).
 inline constexpr const char* ROS_WS_ENV     = "R3D_ROS_WS";
-inline constexpr const char* ROS_WS_DEFAULT = "/home/jetson/R3D_cpp/ros2_ws";
+inline constexpr const char* ROS_WS_DEFAULT = "/root/R3D_cpp/ros2_ws";
 inline constexpr const char* ROS_SETUP      = "/opt/ros/humble/setup.bash";
 inline constexpr const char* BRIDGE_PACKAGE = "r3d_bringup";
 inline constexpr const char* BRIDGE_NODE    = "r3d_ws_bridge";

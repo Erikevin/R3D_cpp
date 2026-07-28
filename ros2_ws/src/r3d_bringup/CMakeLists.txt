@@ -58,11 +58,37 @@ add_executable(r3d_bench src/bench.cpp)
 target_link_libraries(r3d_bench ${PROJECT_NAME}_lib)
 ament_target_dependencies(r3d_bench sensor_msgs)
 
+# ---- 相机录制器静态库 (= R3D/camera/camera_two_value.py) -------------------
+# 独立于 ws_bridge：仅依赖 rclcpp/nav_msgs/Threads，不引入 OpenCV/boost。
+add_library(${PROJECT_NAME}_camodom_lib STATIC
+  src/v4l2_camera.cpp
+  src/odom_writer.cpp
+  src/ts_reader.cpp
+  src/capture_node.cpp
+)
+target_include_directories(${PROJECT_NAME}_camodom_lib PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+ament_target_dependencies(${PROJECT_NAME}_camodom_lib rclcpp nav_msgs)
+target_link_libraries(${PROJECT_NAME}_camodom_lib Threads::Threads)
+
+# ---- image_odom_recorder: 双相机 V4L2 MJPG + Livox 时间戳同步 + odom + ros2bag
+add_executable(image_odom_recorder src/image_odom_recorder_main.cpp)
+target_link_libraries(image_odom_recorder ${PROJECT_NAME}_camodom_lib)
+ament_target_dependencies(image_odom_recorder rclcpp)
+
 # ---- install ---------------------------------------------------------------
 install(TARGETS
     r3d_ws_bridge
     mock_publisher
     r3d_bench
+    image_odom_recorder
   DESTINATION lib/${PROJECT_NAME})
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/launch)
+  install(DIRECTORY launch
+    DESTINATION share/${PROJECT_NAME}
+  )
+endif()
 
 ament_package()

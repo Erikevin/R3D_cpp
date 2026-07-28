@@ -11,10 +11,10 @@ endif()
 
 find_package(Threads REQUIRED)
 
-# ---- GPIO backend (compile-time select) ------------------------------------
-set(R3D_GPIO_BACKEND "MOCK" CACHE STRING "GPIO backend: MOCK | SYSFS | LIBGPIOD")
-set_property(CACHE R3D_GPIO_BACKEND PROPERTY STRINGS MOCK SYSFS LIBGPIOD)
-add_compile_definitions(R3D_GPIO_BACKEND_${R3D_GPIO_BACKEND})
+# ---- GPIO backend (wiringPi, Orange Pi) ------------------------------------
+# When libwiringPi is found, gpio.cpp is compiled with USE_WIRINGPI; otherwise
+# it falls back to the logging Mock backend (so host builds still work).
+option(USE_WIRINGPI "Enable wiringPi GPIO backend (Orange Pi)" ON)
 
 # ---- Tier-A core library (no ROS) ------------------------------------------
 add_library(r3d_core STATIC
@@ -30,14 +30,22 @@ add_library(r3d_core STATIC
 target_include_directories(r3d_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(r3d_core PUBLIC Threads::Threads)
 
-# Optional libgpiod link (header presence is auto-detected in gpio.cpp, so a
-# missing header silently falls back to MOCK at compile time).
-if(R3D_GPIO_BACKEND STREQUAL "LIBGPIOD")
-    find_library(R3D_LIBGPIOD gpiod)
-    if(R3D_LIBGPIOD)
-        target_link_libraries(r3d_core PUBLIC ${R3D_LIBGPIOD})
+# wiringPi discovery — when found, compile gpio.cpp with USE_WIRINGPI and link
+# libwiringPi; otherwise gpio.cpp uses the Mock backend (host development).
+if(USE_WIRINGPI)
+    find_library(WIRINGPI_LIB wiringPi
+        PATHS /usr/lib /usr/local/lib
+              /usr/lib/arm-linux-gnueabihf
+              /usr/lib/aarch64-linux-gnu)
+    find_path(WIRINGPI_INCLUDE_DIR wiringPi.h
+        PATHS /usr/include /usr/local/include)
+    if(WIRINGPI_LIB AND WIRINGPI_INCLUDE_DIR)
+        message(STATUS "✅ 找到 wiringPi: ${WIRINGPI_LIB}")
+        target_compile_definitions(r3d_core PUBLIC USE_WIRINGPI)
+        target_include_directories(r3d_core PUBLIC ${WIRINGPI_INCLUDE_DIR})
+        target_link_libraries(r3d_core PUBLIC ${WIRINGPI_LIB})
     else()
-        message(WARNING "libgpiod not found; GPIO will fall back to MOCK.")
+        message(WARNING "⚠️  未找到 wiringPi，GPIO 使用 Mock 后端")
     endif()
 endif()
 
@@ -53,11 +61,11 @@ target_link_libraries(r3d_send_cmd PRIVATE r3d_core)
 
 # ---- Cross-compile (aarch64 / Jetson) --------------------------------------
 # Configure with the toolchain file (see scripts/cross-aarch64.sh):
-#   cmake -B build-aarch64 -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-linux-gnu.cmake -DR3D_GPIO_BACKEND=LIBGPIOD
-# LIBGPIOD needs libgpiod-dev:aarch64 in the sysroot; without it gpio.cpp falls
-# back to MOCK at compile time (via __has_include).
+#   cmake -B build-aarch64 -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-linux-gnu.cmake -DUSE_WIRINGPI=ON
+# wiringPi needs libwiringPi in the sysroot; without it gpio.cpp falls back to
+# the Mock backend at compile time.
 if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-    message(STATUS "R3D: cross-compiling for aarch64 — GPIO backend=${R3D_GPIO_BACKEND}")
+    message(STATUS "R3D: cross-compiling for aarch64 — USE_WIRINGPI=${USE_WIRINGPI}")
 endif()
 
 # ---- Tier-B ROS 2 package --------------------------------------------------

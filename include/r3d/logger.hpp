@@ -2,6 +2,7 @@
 // Tiny thread-safe stderr logger with [LEVEL] prefix and emoji-free tags
 // compatible with the Python output style. Header-only.
 
+#include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <mutex>
@@ -25,13 +26,17 @@ inline void log(Level lv, std::string_view msg) {
         case Level::Warn:  tag = "WARN";  break;
         case Level::Error: tag = "ERROR"; break;
     }
-    std::time_t now = std::time(nullptr);
+    auto now = std::chrono::system_clock::now();
+    auto sec = std::chrono::time_point_cast<std::chrono::seconds>(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - sec).count();
+    std::time_t t = std::chrono::system_clock::to_time_t(sec);
     std::tm tm{};
-    localtime_r(&now, &tm);
-    char tbuf[24];
+    localtime_r(&t, &tm);
+    char tbuf[16];
     std::strftime(tbuf, sizeof(tbuf), "%H:%M:%S", &tm);
     std::lock_guard<std::mutex> lk(mux());
-    std::fprintf(stderr, "[%s][%s] %.*s\n", tbuf, tag,
+    std::fprintf(stderr, "[%s.%03lld][%s] %.*s\n", tbuf,
+                 static_cast<long long>(ms), tag,
                  static_cast<int>(msg.size()), msg.data());
     std::fflush(stderr);
 }

@@ -23,6 +23,9 @@
   <build_depend>libboost-dev</build_depend>
   <exec_depend>libopencv-dev</exec_depend>
 
+  <!-- image_odom_recorder forks `ros2 bag record` (runtime CLI, not a build dep) -->
+  <exec_depend>rosbag2_py</exec_depend>
+
   <test_depend>ament_cmake_copyright</test_depend>
 
   <export>

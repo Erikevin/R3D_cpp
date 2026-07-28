@@ -5,6 +5,7 @@
 // on detection it sends ALLOW_SHUTDOWN and invokes the shutdown callback.
 
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <thread>
@@ -32,9 +33,12 @@ public:
 
 private:
     void recv_task();         // background rx loop
+    void parse_buffer(const unsigned char* data, std::size_t len);  // decode 0x31 frames
 
     serial::SerialPort ser_;
     std::atomic<bool> running_{false};
+    bool shutdown_triggered_{false};  // latch: run the shutdown flow only once
+    bool fan_auto_on_{false};         // auto-fan state (edge-triggered on temp threshold)
     std::thread recv_thread_;
     std::thread::id  recv_tid_;     // so close() can avoid joining itself
     ShutdownCallback on_shutdown_;

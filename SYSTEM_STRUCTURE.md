@@ -65,23 +65,56 @@ so every photo is stamped with the **real LiDAR time** (post-processing alignmen
 
 ## 3. Wire Protocol (power board)
 
-Fixed **9-byte frames**, little/big-agnostic, payload byte at index 5 is what matters:
+Fixed **9-byte frames**: `[0x5C][CMD][payload×5][0x0D][0x0A]`. All parsing/encoding
+lives in `serial_protocol.cpp` (`SerialProtocol::parse_buffer` / `send`).
+
+### 3.1 Power board → Jetson — `0x31` cyclic telemetry (sent continuously)
 
 ```
-[0x5C] [CMD] [DATA] [0x00] [0x00] [0x00] [0x00] [0x0D] [0x0A]
-   |     |     |
- header cmd  payload (index 2); the code actually keys off index 5
+[5C][31][U_H][U_L][Temp][Power_off][Battery][0D][0A]
+  0   1   2    3     4       5          6       7 8
 ```
 
-| CMD  | Direction        | Meaning                         |
-|------|------------------|---------------------------------|
-| 0x31 | board → Jetson   | **Shutdown request** (when `data[5]==1`) |
-| 0x32 | Jetson → board   | Fan on/off (data 0x01/0x00)     |
-| 0x33 | Jetson → board   | Allow shutdown (0x01)           |
-| 0x34 | Jetson → board   | **Radar power** on/off (0x01/0x00) |
+| Field        | Byte (off) | Meaning |
+|--------------|------------|---------|
+| U_H / U_L    | 2, 3       | Voltage, big-endian, in **mV** → logged as V (`(U_H<<8)|U_L / 1000`) |
+| Temp         | 4          | Enclosure temperature, °C (raw byte) |
+| Power_off    | 5          | **>0** ⇒ board requests shutdown |
+| Battery      | 6          | Battery level 0–100 (%) |
 
-Shutdown flow: board sends `5C 31 ... 01 0D 0A` → Jetson replies `5C 33 01 ...` →
-waits 0.5 s → runs the clean shutdown sequence.
+Every received chunk is shown as raw hex, then each `0x31` frame is decoded
+(no throttling — every frame is printed):
+```
+[HH:MM:SS.mmm][INFO] [串口] ← 收到(9B): 5C 31 31 20 23 00 57 0D 0A
+[HH:MM:SS.mmm][INFO] [串口] 遥测: 电压=12.58V  温度=35  电量=87%  关机请求=否
+```
+All log lines carry **millisecond** timestamps (`[HH:MM:SS.mmm]`, see `logger.hpp`).
+
+### 3.2 Jetson → power board — commands
+
+| CMD  | Meaning |
+|------|---------|
+| 0x32 | Fan on/off — byte3 `>0` on / `=0` off → `FAN_ON` / `FAN_OFF` |
+| 0x33 | Allow shutdown — byte3 `=1` → `ALLOW_SHUTDOWN` |
+| 0x34 | Radar power — byte3 `=1` on / `=0` off → `RADAR_ON` / `RADAR_OFF` |
+
+Command strings carry embedded `0x00`, so they are built with the
+`std::string(ptr, len)` constructor — the plain `string(const char*)` form would
+truncate at the first null (e.g. `FAN_ON` would shrink 9→3 bytes). Every `send()`
+also logs its bytes: `[串口] → 发送: 5C 32 01 00 00 00 00 0D 0A`.
+
+### 3.3 Auto behaviors driven by the telemetry frame
+
+- **Auto fan (thermal):** when `Temp > FAN_TEMP_THRESHOLD` (default **45 °C**,
+  adjustable in `config.hpp`) the Jetson sends `FAN_ON`; when it drops back to
+  ≤ threshold it sends `FAN_OFF`. **Edge-triggered** (one command per threshold
+  crossing) so the cyclic report never spams fan commands.
+- **Shutdown triggers** — either fires the same flow, **latched once per run**:
+  1. `Power_off > 0` — board explicitly requests shutdown.
+  2. `Battery < BAT_LOW` (< 10 %) — low battery.
+
+  Flow: log the reason → send `ALLOW_SHUTDOWN` → wait `ALLOW_SHUTDOWN_DELAY_MS`
+  (0.5 s) → invoke the shutdown callback (`System::shutdown()`).
 
 ---
 

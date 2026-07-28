@@ -104,6 +104,32 @@ mock to also publish a synthetic `CompressedImage`.
 
 ---
 
+## image_odom_recorder — C++ port of `R3D/camera/camera_two_value.py`
+
+Dual-camera V4L2 native-MJPG recorder, time-aligned to the LiDAR. Sits in this
+package alongside `ws_bridge_node` (per `SYSTEM_STRUCTURE.md` §5/§6).
+
+- A **trigger thread** watches the Livox mmap timestamp (`~/timeshare`); on each
+  new ns (≥ `1/fps` apart) it wakes **both** independent camera threads, which grab
+  the latest MJPG frame and save it under the **same** LiDAR-ns filename
+  (`images/camera0|1/<sec>.jpg`) → frames align with `/livox/*` and `odom.txt`.
+- Raw MJPG bytes are written straight to disk by an async IO thread (zero
+  decode/encode); `odom.txt` records `/lio_sam/mapping/odometry`.
+- Optionally forks `ros2 bag record` into `<output_dir>/rosbag2` for
+  `/livox/imu /livox/lidar` (params `record_bag`, `bag_topics`).
+
+```bash
+ros2 run r3d_bringup image_odom_recorder
+ros2 launch r3d_bringup recorder.launch.py
+```
+
+Params: `odom_topic, output_dir, camera_device0|2, image_width, image_height, fps,
+jpeg_quality, max_pending, record_bag, bag_topics`. Source files: `src/capture_node.cpp`
++ `v4l2_camera.cpp` / `odom_writer.cpp` / `ts_reader.cpp`, headers under
+`include/r3d_camodom/` (namespace `r3d_camodom`).
+
+---
+
 ## WebSocket protocol (identical to `web_a.py`)
 
 Client → server:

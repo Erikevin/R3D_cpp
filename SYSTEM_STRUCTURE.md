@@ -138,7 +138,7 @@ LED mapping: RUN=green, ERROR/LOW_BAT=red, SCAN=green blinking @1 Hz.
 | Python                     | C++ file                                | Notes |
 |----------------------------|-----------------------------------------|-------|
 | `config.py`                | `include/r3d/config.hpp`                | `constexpr` constants |
-| `hardware.py` (RPi.GPIO)   | `include/r3d/gpio.hpp` + `src/gpio.cpp`  | pluggable backend (libgpiod / sysfs / mock) |
+| `hardware.py` (RPi.GPIO)   | `include/r3d/gpio.hpp` + `src/gpio.cpp`  | `IGpio` + wiringPi/mock (compile-time via `USE_WIRINGPI`) |
 | `hardware.py` (blink/leds) | `include/r3d/hardware.hpp` + `.cpp`      | `std::thread` blink loop |
 | `serial_protocol.py`       | `serial.hpp` + `serial_protocol.hpp/.cpp`| POSIX termios UART |
 | `protection.py`            | `protection.hpp` + `.cpp`                | battery monitor stub |
@@ -196,7 +196,7 @@ R3D_cpp/
 
 **Tier split matters for build deps:**
 
-- **Tier A (`R3D_cpp/`)** — links only **pthread** + optional **libgpiod**. Compiles
+- **Tier A (`R3D_cpp/`)** — links only **pthread** + optional **libwiringPi**. Compiles
   and runs (mock GPIO) on any Linux for development; deploys to the Jetson for real.
 - **Tier B (`ros2_ws/`)** — a standard ROS 2 package needing `rclcpp`, `sensor_msgs`,
   `nav_msgs`, `OpenCV`, `cv_bridge`, and `boost` (for the WebSocket server). Built
@@ -208,7 +208,7 @@ R3D_cpp/
 
 | Concern            | Python              | C++ choice                  | Why |
 |--------------------|---------------------|-----------------------------|-----|
-| GPIO               | RPi.GPIO (BOARD)    | **libgpiod** (+ sysfs/mock) | character-device API, modern, on Jetson |
+| GPIO               | RPi.GPIO (BOARD)    | **wiringPi** (+ mock)       | `IGpio` interface; wiringPi pin numbering (Orange Pi) |
 | UART               | pyserial            | **POSIX termios**           | zero dependency |
 | Threading          | threading           | **std::thread / mutex / atomic** | standard |
 | Async I/O (WS)     | asyncio + websockets| **boost::asio + boost::beast** | already a ROS 2 transitive dep |
@@ -217,9 +217,10 @@ R3D_cpp/
 | IPC                | JSON file           | hand parser (`{"cmd":N}`)   | file is tiny & fixed-shape |
 | Shared-mem ts      | mmap + struct       | **mmap + memcpy int64**     | identical binary layout |
 
-GPIO is behind an `IGpio` interface so the backend is selected at compile time
-(`-DR3D_GPIO_BACKEND=LIBGPIOD|SYSFS|MOCK`). `MOCK` lets the whole core build & run on
-a dev PC with logging instead of hardware access.
+GPIO is behind an `IGpio` interface with two compile-time backends: `WiringPiGpio`
+(when `USE_WIRINGPI=ON` **and** libwiringPi is found) and the logging `MockGpio`
+otherwise. `MockGpio` lets the whole core build & run on a dev PC with logging
+instead of hardware access.
 
 ---
 
@@ -242,11 +243,11 @@ checks it and `finally`-style cleanup turns LEDs off and closes the UART.
 
 ```bash
 # Tier A — core control (dev PC, mock GPIO)
-cd R3D_cpp && cmake -B build -DR3D_GPIO_BACKEND=MOCK && cmake --build build -j
+cd R3D_cpp && cmake -B build -DUSE_WIRINGPI=OFF && cmake --build build -j   # MOCK（无硬件）
 ./build/r3d_main
 
 # Tier A — on the Jetson (real hardware)
-cmake -B build -DR3D_GPIO_BACKEND=LIBGPIOD && cmake --build build -j
+cmake -B build -DUSE_WIRINGPI=ON && cmake --build build -j                # 需 libwiringPi 已装
 sudo ./build/r3d_main
 
 # Tier B — ROS 2 nodes
@@ -260,8 +261,9 @@ ros2 run r3d_bringup image_odom_recorder # dual-cam + odom recorder
 
 ## 10. Fidelity Notes (intentional differences from Python)
 
-1. **GPIO**: RPi.GPIO does not actually run on Jetson; the C++ uses libgpiod with a
-   documented BOARD→gpio-line map in `config.hpp` (verify against your Jetson model).
+1. **GPIO**: RPi.GPIO does not actually run on the board; the C++ uses **wiringPi**
+   (Orange Pi's wiringOP), with pin numbers in wiringPi numbering in `config.hpp`
+   (verify with `gpio readall` against your board).
 2. **`shutdown()`** in Python calls `subprocess.run(["echo","123","|","sudo",...])`
    which is broken (echo isn't a pipe). The C++ uses `execlp("shutdown","-h","now")`
    after dropping to root / via a polkit/sudo helper — correct and safe.

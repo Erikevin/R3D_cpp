@@ -25,7 +25,11 @@ int main(int argc, char** argv) {
     // throws — log and exit cleanly rather than aborting.
     rclcpp::spin(std::make_shared<r3d_ws::WsBridgeNode>());
   } catch (const std::exception& e) {
+    // 启动异常（bind 失败 / 端口被占等）：非零退出，让 r3d_main 据此触发
+    // r3d-main.service 重启（配合启动前杀掉 8765 占用者，端口冲突会在重启中被化解）。
     r3d_ws::log::error(std::string("启动失败: ") + e.what());
+    rclcpp::shutdown();
+    return 1;
   }
 
   rclcpp::shutdown();

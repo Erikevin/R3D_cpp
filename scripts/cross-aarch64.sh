@@ -2,9 +2,11 @@
 # Cross-compile Tier-A (r3d_core, no ROS) for aarch64 (Jetson).
 # Requires: gcc-aarch64-linux-gnu (host) + the aarch64 libc/libstdc++ sysroot
 # (present under /usr/aarch64-linux-gnu on Ubuntu).
-# For the LIBGPIOD backend also: sudo dpkg --add-architecture aarch64 &&
-#   sudo apt update && sudo apt install libgpiod-dev:aarch64
-# (otherwise gpio.cpp falls back to MOCK via __has_include).
+# GPIO backend is wiringPi (CMake option USE_WIRINGPI, default ON). A cross build
+# usually lacks an aarch64 libwiringPi in the sysroot → CMake warns and gpio.cpp
+# falls back to MOCK (logic-only; real GPIO must be built natively on the board).
+# For real wiringPi here: install an aarch64 libwiringPi into the sysroot — or just
+# rebuild natively on the device (recommended).
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -12,7 +14,7 @@ cd "$ROOT"
 
 cmake -B build-aarch64 \
   -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-linux-gnu.cmake \
-  -DR3D_GPIO_BACKEND="${R3D_GPIO_BACKEND:-LIBGPIOD}" \
+  -DUSE_WIRINGPI=ON \
   "$@"
 cmake --build build-aarch64 -j
 

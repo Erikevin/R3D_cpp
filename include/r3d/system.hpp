@@ -2,7 +2,9 @@
 // Central state machine + orchestration — C++ mirror of R3D/system.py.
 
 #include <atomic>
+#include <chrono>
 #include <memory>
+#include <thread>
 
 #include "bridge_launcher.hpp"
 #include "config.hpp"
@@ -35,12 +37,17 @@ public:
     // ---- lifecycle ----
     void boot_wait();
     bool init_all();                    // hardware + serial
+    // True once init_all() has succeeded — gates cross-process command handling
+    // so the radar is never commanded before GPIO/serial are ready.
+    bool initialized() const { return initialized_.load(); }
     void start_radar();
     void stop_radar();
     void shutdown();                    // clean shutdown sequence
 
     // ---- main flow ----
-    void start_main_flow();             // blocks (debug console / state loop)
+    // Blocks (debug console / state loop). Returns the process exit code: 0 on a
+    // clean stop, non-zero if the bridge died (so r3d-main.service restarts us).
+    int start_main_flow();
 
     // Expose subsystems (Protection needs a back-reference).
     Hardware&       hw()       { return hw_; }
@@ -48,6 +55,10 @@ public:
 
 private:
     void debug_console();
+    // Background supervisor: if the bridge dies, set bridge_died_ and stop the main
+    // loop so r3d_main exits non-zero → r3d-main.service restarts (which first kills
+    // whoever holds 8765, then relaunches the bridge).
+    void monitor_bridge();
 
     Hardware        hw_;
     SerialProtocol  serial_;
@@ -56,6 +67,10 @@ private:
     config::State   state_ = config::State::Init;
     std::atomic<bool> debug_mode_{false};
     std::atomic<bool> shutting_down_{false};
+    std::atomic<bool> initialized_{false};  // set true at end of init_all()
+
+    std::atomic<bool> bridge_died_{false};   // set by monitor_bridge() on bridge exit
+    std::thread bridge_mon_;                  // runs monitor_bridge()
 };
 
 } // namespace r3d

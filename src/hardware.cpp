@@ -54,17 +54,20 @@ void Hardware::red(bool value) {
 
 void Hardware::blink_task() {
     // Toggle the scan/green pin every 500 ms while scanning, then leave it HIGH.
+    // Guard every deref: start_scan_pwm() refuses to start us before init(),
+    // but keep this defensive in case gpio_ is reset during shutdown racing.
     while (is_scanning_) {
-        gpio_->write(config::PWM_SCAN, true);
+        if (gpio_) gpio_->write(config::PWM_SCAN, true);
         std::this_thread::sleep_for(std::chrono::milliseconds(config::BLINK_HALF_PERIOD_MS));
         if (!is_scanning_) break;
-        gpio_->write(config::PWM_SCAN, false);
+        if (gpio_) gpio_->write(config::PWM_SCAN, false);
         std::this_thread::sleep_for(std::chrono::milliseconds(config::BLINK_HALF_PERIOD_MS));
     }
-    gpio_->write(config::PWM_SCAN, true);
+    if (gpio_) gpio_->write(config::PWM_SCAN, true);
 }
 
 void Hardware::start_scan_pwm() {
+    if (!gpio_) return; // init() not done yet — blink_task would deref a null gpio_
     is_scanning_ = true;
     if (blink_thread_.joinable()) return; // already running
     blink_thread_ = std::thread([this] { blink_task(); });

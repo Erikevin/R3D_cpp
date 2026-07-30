@@ -2,13 +2,13 @@
 
 // 主节点：双相机 V4L2 原生 MJPG 高效保存 + 独立采集线程 + Odometry 记录。
 //
-// 时序对齐（移植自 camera_two_value.py）：
-//   trigger_loop 作为“主时钟”监听 Livox 共享内存纳秒戳（TsReader），当时间戳变化且
-//   距上次触发 >= 1/fps 时，把该雷达 ns 写入 trig_.ns 并 ++trig_.gen、notify_all()。
+// 时序对齐（移植自 camera_two_value.py，触发源已改为系统时间戳）：
+//   trigger_loop 作为“主时钟”以 steady_clock 测量间隔，距上次触发 >= 1/fps 时，
+//   取 system_clock 的 wall-clock 纳秒写入 trig_.ns 并 ++trig_.gen、notify_all()。
 //
 // 每个相机独立的 capture 线程：
-//   在 trig_.cv 上等待同一个 tick，被唤醒后用该雷达 ns 生成文件名、grab() 最新帧、
-//   推入共享 IO 队列。两路相机并发抓取、互不阻塞，但文件名同源 → 与雷达/odom 时间轴对齐。
+//   在 trig_.cv 上等待同一个 tick，被唤醒后用该系统时间戳 ns 生成文件名、grab() 最新帧、
+//   推入共享 IO 队列。两路相机并发抓取、互不阻塞，文件名同源 → 共享同一时间轴。
 //
 // io_loop（落盘线程）：
 //   消费 IO 队列，把 MJPG 字节直接 write 到磁盘（零编码）。有界队列 + 背压丢老帧。
@@ -63,7 +63,8 @@ private:
   std::string img_dir1_;
   CamConfig cam0_cfg_;
   CamConfig cam2_cfg_;
-  int target_fps_ = 10;
+  int cam_fps_ = 10;    // V4L2 硬件抓图帧率（cfg_.fps）
+  int save_fps_ = 5;    // 保存到磁盘的帧率（trigger 触发频率；grab 排空取最新 → 对硬件流抽帧）
   std::size_t max_pending_ = 16;
   bool record_bag_ = true;
   std::string bag_topics_;
@@ -78,7 +79,7 @@ private:
   struct TriggerState {
     std::mutex mtx;
     std::condition_variable cv;
-    int64_t ns = 0;       // 当前 tick 的 Livox 纳秒戳
+    int64_t ns = 0;       // 当前 tick 的系统 wall-clock 纳秒戳
     uint64_t gen = 0;     // 单调递增，每新 tick +1
   } trig_;
 

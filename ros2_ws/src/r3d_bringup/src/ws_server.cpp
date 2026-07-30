@@ -3,7 +3,7 @@
 // Path routing: only "/data" is accepted (matches web_a.py::router); any other
 // target gets the socket closed. The send loop mirrors the Python send_loop:
 // every 50 ms, when recording & mapping_ready (or R3D_FORCE_STREAM=1), it pushes
-// img/odom and rate-limits pcd to PCD_SEND_INTERVAL (10 Hz).
+// img/odom and rate-limits pcd to PCD_SEND_INTERVAL (5 Hz).
 
 #include "r3d_ws/ws_server.hpp"
 
@@ -174,16 +174,16 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
     }
   }
 
-  // ---- send tick (50 ms) ----
+  // ---- send tick (5 Hz) ----
   void start_tick() {
     last_pcd_send_ = clock::now() - std::chrono::milliseconds(100);
-    timer_.expires_after(std::chrono::milliseconds(50));
+    timer_.expires_after(std::chrono::milliseconds(config::SEND_TICK_INTERVAL_MS));
     timer_.async_wait(
         beast::bind_front_handler(&WsSession::on_tick, shared_from_this()));
   }
 
   // Stop the per-connection send loop (idempotent). Called when the read side
-  // detects the peer disconnecting, or a write fails — otherwise the 50 ms send
+  // detects the peer disconnecting, or a write fails — otherwise the 5 Hz send
   // tick keeps firing and logs a write error every tick.
   void stop_session() {
     if (!closed_.exchange(true)) {
@@ -231,7 +231,7 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
       }
     }
 
-    timer_.expires_after(std::chrono::milliseconds(50));
+    timer_.expires_after(std::chrono::milliseconds(config::SEND_TICK_INTERVAL_MS));
     timer_.async_wait(
         beast::bind_front_handler(&WsSession::on_tick, shared_from_this()));
   }

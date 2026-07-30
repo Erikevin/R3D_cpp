@@ -29,7 +29,18 @@ std::string ros_ws() {
 BridgeLauncher::~BridgeLauncher() { stop(); }
 
 void BridgeLauncher::start() {
-    if (pid_ > 0) return;  // already launched
+    std::lock_guard<std::mutex> lk(m_);
+    if (pid_ > 0) {                      // reap any zombie, then no-op if still alive
+        pid_t r = ::waitpid(pid_, nullptr, WNOHANG);
+        if (r == 0) return;              // still running
+        pid_ = -1;                       // it had died
+    }
+
+    // Free port 8765 before (re)binding: kill whatever holds it. The operator has
+    // confirmed nothing important uses 8765, so this is safe — it clears a stale
+    // orphaned bridge from a previous crash as well as any other accidental holder.
+    int kill_rc = std::system("fuser -k 8765/tcp 2>/dev/null; pkill -f r3d_ws_bridge 2>/dev/null");
+    (void)kill_rc;
     // Fail fast if the workspace can't be sourced. A wrong path here used to
     // silently abort the command chain inside the child (source failed → ros2
     // run never ran) while the parent still logged "started". Override via
@@ -118,6 +129,7 @@ void BridgeLauncher::start() {
 }
 
 void BridgeLauncher::stop() {
+    std::lock_guard<std::mutex> lk(m_);
     if (pid_ > 0) {
         kill(pid_, SIGTERM);
         // gnome-terminal returns immediately (server mode); reap without blocking.
@@ -128,12 +140,22 @@ void BridgeLauncher::stop() {
         }
         pid_ = -1;
     }
-    // The ros2 child is reparented (gnome-terminal forks it off); pkill by cmd.
-    const std::string pkill = std::string("pkill -f \"ros2 run ") +
-                              config::BRIDGE_PACKAGE + " " + config::BRIDGE_NODE + "\"";
+    // Match by node name: the child runs `exec ros2 run …`, which replaces the
+    // launcher image with the r3d_ws_bridge node, so the final process cmdline is
+    // r3d_ws_bridge — the old "ros2 run …" pattern never matched it.
+    const std::string pkill = std::string("pkill -f ") + config::BRIDGE_NODE;
     int rc = std::system(pkill.c_str());
     (void)rc;
     log::info("[bridge] 已请求停止 r3d_bringup bridge");
+}
+
+bool BridgeLauncher::is_alive() {
+    std::lock_guard<std::mutex> lk(m_);
+    if (pid_ <= 0) return false;
+    pid_t r = ::waitpid(pid_, nullptr, WNOHANG);
+    if (r == 0) return true;   // still running
+    pid_ = -1;                 // reaped (r == pid) or already gone (ECHILD) → cleared
+    return false;
 }
 
 } // namespace r3d

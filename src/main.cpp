@@ -31,6 +31,16 @@ static void monitor_shared_cmd(r3d::System& system) {
 
     int last_cmd = -1;   // only act when the command changes
     while (r3d::g_running) {
+        // Wait until the hardware layer is fully initialized before acting on
+        // any command. This thread starts before start_main_flow() runs
+        // hw_.init(), so without this gate a startup-time shared_cmd=1 used to
+        // spawn the blink thread against a null gpio_ and crash in blink_task()
+        // (hardware.cpp). Skipping here also leaves last_cmd untouched, so the
+        // stale value still fires exactly once after init completes.
+        if (!system.initialized()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(r3d::config::IPC_POLL_MS));
+            continue;
+        }
         int cmd = -1;
         if (r3d::ipc::read_cmd(r3d::config::SHARE_FILE, cmd)) {
             if (cmd != last_cmd &&
@@ -59,8 +69,9 @@ int main() {
 
     std::thread ipc_thread([&system] { monitor_shared_cmd(system); });
 
+    int rc = 0;
     try {
-        system.start_main_flow();
+        rc = system.start_main_flow();
     } catch (const std::exception& e) {
         r3d::log::error(std::string("异常：") + e.what());
     }
@@ -71,5 +82,7 @@ int main() {
     system.hw().exit_clean();
     system.serial().close();
     if (ipc_thread.joinable()) ipc_thread.join();
-    return 0;
+    // 桥死 → rc 非零 → systemd on-failure 重启（重启时先杀 8765 占用者再拉桥）；
+    // 正常 SIGINT/SIGTERM 停止 → rc=0 不重启。
+    return rc;
 }

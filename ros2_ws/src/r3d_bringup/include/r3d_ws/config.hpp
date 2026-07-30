@@ -14,7 +14,8 @@ inline constexpr int  SEND_HEIGHT          = 540;
 
 // ---- Stream timing ---------------------------------------------------------
 inline constexpr double MAX_TIME_DIFF     = 0.05;  // s — odom/lidar sync window
-inline constexpr double PCD_SEND_INTERVAL = 0.1;   // s — 10 Hz pcd cap
+inline constexpr double PCD_SEND_INTERVAL = 0.2;      // s — 5 Hz pcd cap
+inline constexpr int    SEND_TICK_INTERVAL_MS = 200;  // ms — 5 Hz send tick (odom/img)
 
 // ---- Buffers ---------------------------------------------------------------
 inline constexpr std::size_t PCD_MAX_POINTS   = 8000;
@@ -27,5 +28,14 @@ inline constexpr unsigned short WS_PORT = 8765;
 // ---- Paths -----------------------------------------------------------------
 inline constexpr const char* SAVE_PCD_DIR = "/home/jetson/Desktop/save_pcd/";
 inline constexpr const char* SHARE_FILE   = "/tmp/shared_cmd.txt";
+
+// ---- Mapping command configuration (externalized JSON) ---------------------
+// JSON holding the three background-process command strings for
+// MappingControl::start_mapping_commands(). Resolved RELATIVE TO THE BRIDGE CWD
+// (parent of ros2_ws — same assumption the command strings themselves rely on,
+// which reference "ros2_ws/install/setup.bash"). Override with an absolute path
+// via $R3D_MAPPING_CMD_FILE when that assumption does not hold.
+inline constexpr const char* MAPPING_CMD_FILE_ENV     = "R3D_MAPPING_CMD_FILE";
+inline constexpr const char* MAPPING_CMD_FILE_DEFAULT = "ros2_ws/src/r3d_bringup/config/mapping_commands.json";
 
 } // namespace r3d_ws::config

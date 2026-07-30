@@ -1,0 +1,56 @@
+# r3d-main.service — R3D 设备主控 Tier-A 进程的系统服务模板
+# ============================================================================
+# 进程：r3d_main（GPIO + UART + 状态机 + /tmp/shared_cmd.txt 监听）。本体【无 ROS】
+#   （顶层 CMakeLists 里 r3d_core 只 link Threads + wiringPi，没有 ament/rclcpp）。
+#   r3d_main 内部经 BridgeLauncher fork 出 r3d_ws_bridge —— 桥在自己的子进程里 source ROS：
+#       source /opt/ros/humble/setup.bash && source $R3D_ROS_WS/install/setup.bash
+#   手机 startRecord 后，桥再 fork livox/lio_sam/camera，这些在 mapping_commands.json
+#   里各自 source /opt/ros/humble + /root/my_robot_d/install/setup.bash。
+#   => 本服务【不需要】ExecStartPre source 任何 ROS 环境；source 了 r3d_main 也用不上。
+#
+# Restart=on-failure 替代原 r3d_daemon 的 respawn（r3d_daemon 靠 gnome-terminal 拉起
+#   r3d_main，在无头 OrangePi 上已废）。正常退出(rc=0)不重启，与原 daemon 语义一致。
+#
+# 关键约束：
+#   * WorkingDirectory 必须是 R3D_cpp 根 —— 桥继承此 cwd，并按相对路径读取
+#     ros2_ws/src/r3d_bringup/config/mapping_commands.json（否则桥静默回退内置默认）。
+#   * User=root —— wiringPi GPIO(/dev/mem) + /dev/ttyS2 + /root 路径都需要。
+#   * ExecStart 二进制路径：板子上若不在 build/（如 build-aarch64/ 或别处），改这行。
+# ============================================================================
+
+[Unit]
+Description=R3D Tier-A core control (r3d_main)
+Documentation=file:///root/R3D_cpp/SYSTEM_STRUCTURE.md
+# 等 /dev/ttyS2 串口设备就绪（弱依赖：设备缺失也不阻塞本服务启动）
+After=dev-ttyS2.device
+Wants=dev-ttyS2.device
+# 防桥反复崩溃时无限重启：60s 内重启 5 次即停止（需手动 systemctl reset-failed）。
+# 端口被占不会触发——每次启动都先杀掉 8765 占用者，桥能起来。
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/R3D_cpp
+ExecStart=/root/R3D_cpp/build/r3d_main
+
+# r3d_main 自身不读这些；显式设上仅供其 fork 出的桥/建图子进程定位路径，防默认漂移
+Environment=R3D_ROS_WS=/root/R3D_cpp/ros2_ws
+Environment=LANG=C.UTF-8
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# 复刻 r3d_daemon：崩溃/超时重启，正常退出不重启
+Restart=on-failure
+RestartSec=3
+# SIGTERM → r3d_main 优雅退出（main.cpp 的 handler → 停桥 pkill + join ipc 线程）；
+# 给 15s 清理窗口，超时再 SIGKILL 整个 cgroup（兜底清掉 setsid 出去的桥）。
+TimeoutStopSec=15
+KillSignal=SIGTERM
+
+# 日志（stderr）→ journald：journalctl -u r3d-main -f
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

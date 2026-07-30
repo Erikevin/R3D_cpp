@@ -1,12 +1,18 @@
 #pragma once
-// Device / window / file-list control — C++ mirror of the device-management
-// half of R3D/web_a.py (get_device_info, open_terminal, start_mapping_commands,
-// stop_process_in_terminal, close_all_windows, get_pcd_file_list, write_shared_cmd).
+// Device / process / file-list control — C++ mirror of the device-management
+// half of R3D/web_a.py (get_device_info, start_mapping_commands,
+// close_all_windows, get_pcd_file_list, write_shared_cmd).
+//
+// start_mapping_commands() launches Livox / LIO-SAM / recorder as background
+// processes (setsid) with stdout/stderr to /tmp/r3d_mapping_<name>.log, and
+// stops them via kill(-pid) on the whole process group — no gnome-terminal /
+// xdotool, so it works on headless hosts (e.g. OrangePi 3B).
 
 #include <nlohmann/json.hpp>
 
 #include <mutex>
 #include <string>
+#include <sys/types.h>
 #include <vector>
 
 #include "r3d_ws/config.hpp"
@@ -26,23 +32,48 @@ class MappingControl {
   // Atomically write {"cmd": value} to SHARE_FILE (same format R3D_cpp uses).
   static bool write_shared_cmd(int value);
 
-  // Terminal / window lifecycle. These call gnome-terminal + xdotool exactly as
-  // the Python does; on a headless host (no xdotool / no DISPLAY) they log and
-  // return without throwing.
+  // Background-process lifecycle: launch via setsid (logs to
+  // /tmp/r3d_mapping_<name>.log); stop via kill(-pid, SIGINT) on the whole
+  // process group. No display / terminal required.
   void start_mapping_commands();
   void close_all_windows();
 
   bool mapping_ready() const;
 
+  // Loads the three command strings from JSON once (see config.hpp:
+  // MAPPING_CMD_FILE_DEFAULT, overridable via $R3D_MAPPING_CMD_FILE); on any
+  // load failure falls back to built-in defaults. Never throws.
+  MappingControl();
+  // Safety net: if mapping_ready_, stop all child processes so they don't
+  // survive the bridge as orphans holding Livox/camera/bag resources.
+  ~MappingControl();
+
  private:
-  // Open a gnome-terminal running `cmd`; return the new xdotool window id or "".
-  static std::string open_terminal(const std::string& cmd);
-  // Send Ctrl+C into the window with the given id.
-  static void stop_process_in_terminal(const std::string& xid);
+  // fork once -> child setsid -> redirect std fds -> execl bash -c cmd.
+  // Returns child PID (== PGID == SID after setsid) or -1 on any failure.
+  // Child uses only async-signal-safe calls (bridge is multi-threaded).
+  static pid_t spawn_background(const std::string& cmd, const std::string& logfile);
+  // Spawn cmd logged to /tmp/r3d_mapping_<name>.log; returns pid or -1.
+  static pid_t launch_background(const std::string& cmd, const char* name);
+  // kill(-pid, SIGINT) the whole group, poll up to 5s, then SIGKILL + reap.
+  static void stop_background(pid_t pid);
+
+  // Three command strings, loaded once from JSON (or built-in defaults on any
+  // failure). Immutable after construction — read by start_mapping_commands().
+  struct LoadedCommands {
+    std::string livox;
+    std::string lio_sam;
+    std::string camera;
+  };
+  // Reads $R3D_MAPPING_CMD_FILE (else MAPPING_CMD_FILE_DEFAULT rel. to cwd); on
+  // any error the affected field — or all fields — falls back to the built-in
+  // default. Never throws.
+  static LoadedCommands load_commands_from_file();
 
   mutable std::mutex m_;
-  std::vector<std::string> xids_;
+  std::vector<pid_t> pids_;      // child PIDs (== PGIDs) of running mapping procs
   bool mapping_ready_{false};
+  const LoadedCommands cmds_;  // write-once in ctor; read-only thereafter
 };
 
 } // namespace r3d_ws

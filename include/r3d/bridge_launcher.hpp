@@ -3,6 +3,7 @@
 // mirroring R3D/Auto_start.py's web_a.py launch. Keeps r3d_main (Tier-A) free of
 // any ROS link dependency: the ROS environment is sourced inside the terminal.
 
+#include <mutex>
 #include <sys/types.h>
 
 namespace r3d {
@@ -23,7 +24,12 @@ public:
     // Terminate the spawned bridge process group (best-effort).
     void stop();
 
+    // True if the spawned bridge is still running; reaps and clears pid_ if it has
+    // exited. Thread-safe.
+    bool is_alive();
+
 private:
+    mutable std::mutex m_;
     pid_t pid_{-1};
 };
 

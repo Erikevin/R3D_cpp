@@ -20,7 +20,8 @@ def generate_launch_description():
             DeclareLaunchArgument('camera_device2', default_value='/dev/video2'),
             DeclareLaunchArgument('image_width', default_value='2592'),
             DeclareLaunchArgument('image_height', default_value='1944'),
-            DeclareLaunchArgument('fps', default_value='10'),
+            DeclareLaunchArgument('fps', default_value='10'),  # 相机硬件抓图帧率
+            DeclareLaunchArgument('save_fps', default_value='5'),  # 实际保存帧率（抽帧）
             DeclareLaunchArgument('jpeg_quality', default_value='90'),
             DeclareLaunchArgument('max_pending', default_value='16'),
             DeclareLaunchArgument('record_bag', default_value='true'),
@@ -41,6 +42,7 @@ def generate_launch_description():
                         'image_width': LaunchConfiguration('image_width'),
                         'image_height': LaunchConfiguration('image_height'),
                         'fps': LaunchConfiguration('fps'),
+                        'save_fps': LaunchConfiguration('save_fps'),
                         'jpeg_quality': LaunchConfiguration('jpeg_quality'),
                         'max_pending': LaunchConfiguration('max_pending'),
                         'record_bag': LaunchConfiguration('record_bag'),

@@ -66,7 +66,8 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
   this->declare_parameter<std::string>("camera_device2", "/dev/video2");
   this->declare_parameter<int>("image_width", 2592);
   this->declare_parameter<int>("image_height", 1944);
-  this->declare_parameter<int>("fps", 10);
+  this->declare_parameter<int>("fps", 10);        // 相机硬件抓图帧率（V4L2 driver）
+  this->declare_parameter<int>("save_fps", 5);    // 保存到磁盘的帧率（抽帧）
   this->declare_parameter<int>("jpeg_quality", 90);
   this->declare_parameter<int>("max_pending", 16);
   this->declare_parameter<bool>("record_bag", true);
@@ -78,14 +79,15 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
   const std::string dev2 = this->get_parameter("camera_device2").as_string();
   const int w = this->get_parameter("image_width").as_int();
   const int h = this->get_parameter("image_height").as_int();
-  target_fps_ = this->get_parameter("fps").as_int();
+  cam_fps_ = this->get_parameter("fps").as_int();
+  save_fps_ = this->get_parameter("save_fps").as_int();
   const int q = this->get_parameter("jpeg_quality").as_int();
   max_pending_ = static_cast<std::size_t>(this->get_parameter("max_pending").as_int());
   record_bag_ = this->get_parameter("record_bag").as_bool();
   bag_topics_ = this->get_parameter("bag_topics").as_string();
 
-  cam0_cfg_ = CamConfig{dev0, w, h, target_fps_, true, true, q};
-  cam2_cfg_ = CamConfig{dev2, w, h, target_fps_, true, true, q};
+  cam0_cfg_ = CamConfig{dev0, w, h, cam_fps_, true, true, q};
+  cam2_cfg_ = CamConfig{dev2, w, h, cam_fps_, true, true, q};
 
   // ---- 输出目录 ----
   if (output_dir_.empty()) {
@@ -119,13 +121,9 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
   odom_ = std::make_unique<OdomWriter>(this, odom_topic_, odom_path);
   odom_->start();
 
-  // ---- Livox 时间戳共享内存 ----
+  // ---- Livox 时间戳共享内存（保留映射备用；trigger 已改用系统时间戳，不再依赖）----
   if (ts_reader_.open()) {
-    RCLCPP_INFO(this->get_logger(), "⏱️ Livox timeshare 已映射，雷达时间戳触发就绪");
-  } else {
-    // 非致命：get_ns() 会在每次调用时懒重试 open()，雷达栈起来后自动恢复。
-    RCLCPP_WARN(this->get_logger(),
-                "⚠️ Livox timeshare 暂不可读（/home/$USER/timeshare 缺失？），等待雷达栈启动");
+    RCLCPP_INFO(this->get_logger(), "⏱️ Livox timeshare 已映射（当前 trigger 未使用）");
   }
 
   // ---- ros2bag 子进程 ----
@@ -143,8 +141,9 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
   cap2_th_ = std::thread([this] { capture_loop(*cam2_, img_dir1_, "camera1"); });
   trig_th_ = std::thread([this] { trigger_loop(); });
 
-  RCLCPP_INFO(this->get_logger(), "✅ 双摄像头启动成功 | 目标帧率: %dHz (V4L2 原生 MJPG)",
-              target_fps_);
+  RCLCPP_INFO(this->get_logger(),
+              "✅ 双摄像头启动成功 | 硬件抓图: %dHz → 保存: %dHz (grab 排空取最新, 抽帧保存)",
+              cam_fps_, save_fps_);
   RCLCPP_INFO(this->get_logger(), "📷 camera0: %s → %s", dev0.c_str(), img_dir0_.c_str());
   RCLCPP_INFO(this->get_logger(), "📷 camera1: %s → %s", dev2.c_str(), img_dir1_.c_str());
   RCLCPP_INFO(this->get_logger(), "📝 odom: %s → %s", odom_topic_.c_str(), odom_path.c_str());
@@ -208,35 +207,32 @@ void CaptureNode::enqueue_save(const std::string &path, std::vector<uint8_t> dat
 }
 
 void CaptureNode::trigger_loop() {
-  RCLCPP_INFO(this->get_logger(), "⌚ 监听 Livox 时间戳，双相机同步触发...");
-  const double min_interval = 1.0 / static_cast<double>(target_fps_);
-  int64_t last_ns = 0;
+  RCLCPP_INFO(this->get_logger(), "⌚ 基于系统时间戳触发双相机，间隔 %.3fs (%dHz)...",
+              1.0 / static_cast<double>(save_fps_), save_fps_);
+  const double min_interval = 1.0 / static_cast<double>(save_fps_);
   auto last_fire = std::chrono::steady_clock::now();
-  bool warned_no_ts = false;
   std::size_t fire_count = 0;
 
   while (running_) {
-    const int64_t cur_ns = ts_reader_.get_ns();
     const auto now = std::chrono::steady_clock::now();
     const double elapsed = std::chrono::duration<double>(now - last_fire).count();
 
-    // 与 Python capture_loop 一致：时间戳变化 + 达到最小间隔才触发
-    if (cur_ns > 0 && cur_ns != last_ns && elapsed >= min_interval) {
-      last_ns = cur_ns;
+    // 触发源：系统时间戳。steady_clock 测量间隔，达到 min_interval 即触发；
+    // tick 戳取 system_clock 的 wall-clock 纳秒，写入 trig_.ns 供文件名与时间轴对齐。
+    if (elapsed >= min_interval) {
       last_fire = now;
+      const int64_t sys_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::system_clock::now().time_since_epoch())
+                                 .count();
       {
         std::lock_guard<std::mutex> lk(trig_.mtx);
-        trig_.ns = cur_ns;
+        trig_.ns = sys_ns;
         ++trig_.gen;
       }
       trig_.cv.notify_all();  // 唤醒两路相机线程
       if (++fire_count % 10 == 0) {
-        RCLCPP_INFO(this->get_logger(), "✅ 已触发 %zu 个 tick | %dHz", fire_count, target_fps_);
+        RCLCPP_INFO(this->get_logger(), "✅ 已触发 %zu 个 tick | %dHz", fire_count, save_fps_);
       }
-    } else if (cur_ns == 0 && !warned_no_ts) {
-      warned_no_ts = true;
-      RCLCPP_WARN(this->get_logger(),
-                  "⚠️ Livox 时间戳未就绪（timeshare 缺失？），等待雷达栈启动...");
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }

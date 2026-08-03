@@ -7,8 +7,9 @@
 //   取 system_clock 的 wall-clock 纳秒写入 trig_.ns 并 ++trig_.gen、notify_all()。
 //
 // 每个相机独立的 capture 线程：
-//   在 trig_.cv 上等待同一个 tick，被唤醒后用该系统时间戳 ns 生成文件名、grab() 最新帧、
-//   推入共享 IO 队列。两路相机并发抓取、互不阻塞，文件名同源 → 共享同一时间轴。
+//   在 trig_.cv 上等待同一个 tick，被唤醒后 grab() 最新帧（排空 + 丢弃 ERROR/标记异常帧），
+//   以驱动曝光时刻(v4l2_buffer.timestamp) 与 tick 的 timeshare UTC 组合作文件名、推入共享 IO 队列。
+//   两路相机并发抓取、互不阻塞；文件名第二段时间戳同源 → 左右同名配对，共享同一时间轴。
 //
 // io_loop（落盘线程）：
 //   消费 IO 队列，把 MJPG 字节直接 write 到磁盘（零编码）。有界队列 + 背压丢老帧。
@@ -64,7 +65,7 @@ private:
   CamConfig cam0_cfg_;
   CamConfig cam2_cfg_;
   int cam_fps_ = 10;    // V4L2 硬件抓图帧率（cfg_.fps）
-  int save_fps_ = 5;    // 保存到磁盘的帧率（trigger 触发频率；grab 排空取最新 → 对硬件流抽帧）
+  int save_fps_ = 2;    // 保存到磁盘的帧率（trigger 触发频率；grab 排空取最新 → 对硬件流抽帧）
   std::size_t max_pending_ = 16;
   bool record_bag_ = true;
   std::string bag_topics_;
@@ -80,6 +81,7 @@ private:
     std::mutex mtx;
     std::condition_variable cv;
     int64_t ns = 0;       // 当前 tick 的系统 wall-clock 纳秒戳
+    int64_t sys_ns = 0;   // 当前 tick 时刻 timeshare 第二个 timestamp(系统UTC) 的纳秒
     uint64_t gen = 0;     // 单调递增，每新 tick +1
   } trig_;
 

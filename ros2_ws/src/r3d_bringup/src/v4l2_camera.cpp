@@ -4,7 +4,9 @@
 
 #include <cerrno>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <string>
 
 #include <fcntl.h>
 #include <poll.h>
@@ -21,6 +23,20 @@ static int xioctl(int fd, unsigned long request, void *arg) {
     r = ::ioctl(fd, request, arg);
   } while (r < 0 && errno == EINTR);
   return r;
+}
+
+static std::string to_hex(uint32_t v) {
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "%x", v);
+  return std::string(buf);
+}
+
+void V4L2Camera::log(const std::string &msg) const {
+  if (log_) {
+    log_(msg);
+  } else {
+    std::fprintf(stderr, "%s\n", msg.c_str());
+  }
 }
 
 V4L2Camera::V4L2Camera(const CamConfig &cfg) : cfg_(cfg) {}
@@ -136,7 +152,7 @@ bool V4L2Camera::open() {
   return true;
 }
 
-bool V4L2Camera::grab(std::vector<uint8_t> &out) {
+bool V4L2Camera::grab(std::vector<uint8_t> &out, int64_t *frame_ns) {
   std::lock_guard<std::mutex> lk(mtx_);
   if (fd_ < 0 || !streaming_) {
     return false;
@@ -165,6 +181,23 @@ bool V4L2Camera::grab(std::vector<uint8_t> &out) {
       }
       return false;
     }
+    // 错误帧：驱动已 DQBUF 交付，但 USB 传输/解码出错，数据无效。
+    // 归还重填并跳过，绝不计入 kept，避免坏字节落盘。
+    if (buf.flags & V4L2_BUF_FLAG_ERROR) {
+      ++error_frames_;
+      log("⚠️ [" + cfg_.device + "] V4L2 错误帧 flags=0x" + to_hex(buf.flags) +
+          ", 丢弃该帧（累计 " + std::to_string(error_frames_) + "）");
+      v4l2_buffer rel = buf;
+      ::ioctl(fd_, VIDIOC_QBUF, &rel);  // 归还，让硬件重新填充
+      // 非阻塞探测是否还有可立即读取的帧
+      pollfd p{};
+      p.fd = fd_;
+      p.events = POLLIN;
+      if (::poll(&p, 1, 0) <= 0) {
+        break;
+      }
+      continue;
+    }
     if (have) {
       v4l2_buffer rel = kept;
       ::ioctl(fd_, VIDIOC_QBUF, &rel);  // 丢弃旧帧，归还
@@ -187,7 +220,24 @@ bool V4L2Camera::grab(std::vector<uint8_t> &out) {
   // 拷贝最新帧的 MJPG 字节（length 由驱动给出，bytesused 是有效字节）
   const auto &mb = buffers_[kept.index];
   const auto *base = static_cast<uint8_t *>(mb.start);
-  out.assign(base, base + kept.bytesused);
+  const size_t n = kept.bytesused;
+  // 完整性校验：MJPG 必须以 SOI(FFD8) 起、EOI(FFD9) 止，拦截驱动交付的不完整帧。
+  if (n < 4 || base[0] != 0xFF || base[1] != 0xD8 || base[n - 2] != 0xFF || base[n - 1] != 0xD9) {
+    ++corrupt_frames_;
+    log("⚠️ [" + cfg_.device + "] MJPG 标记异常 size=" + std::to_string(n) +
+        ", 丢弃该帧（累计 " + std::to_string(corrupt_frames_) + "）");
+    v4l2_buffer rel = kept;
+    ::ioctl(fd_, VIDIOC_QBUF, &rel);  // 归还，跳过本帧
+    return false;
+  }
+  out.assign(base, base + n);
+
+  // 帧时间戳（驱动曝光时刻，v4l2_buffer.timestamp）→ 纳秒，供文件名/时间轴对齐。
+  // 注意时基取决于驱动（UVC 常为 CLOCK_MONOTONIC），与 system_clock 墙钟不同源。
+  if (frame_ns) {
+    *frame_ns = static_cast<int64_t>(kept.timestamp.tv_sec) * 1000000000LL +
+                static_cast<int64_t>(kept.timestamp.tv_usec) * 1000LL;
+  }
 
   // 归还最新帧 buffer
   v4l2_buffer rel = kept;

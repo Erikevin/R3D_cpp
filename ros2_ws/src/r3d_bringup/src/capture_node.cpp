@@ -116,6 +116,13 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
                  dev2.c_str());
   }
 
+  // 错误帧 / MJPG 标记异常告警走 ROS WARN（V4L2Camera 默认打 stderr）
+  auto cam_warn = [this](const std::string &msg) {
+    RCLCPP_WARN(this->get_logger(), "%s", msg.c_str());
+  };
+  cam0_->set_logger(cam_warn);
+  cam2_->set_logger(cam_warn);
+
   // ---- Odometry ----
   const std::string odom_path = output_dir_ + "/odom.txt";
   odom_ = std::make_unique<OdomWriter>(this, odom_topic_, odom_path);
@@ -224,9 +231,12 @@ void CaptureNode::trigger_loop() {
       const int64_t sys_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                  std::chrono::system_clock::now().time_since_epoch())
                                  .count();
+      // 取 timeshare 第二个 timestamp(系统UTC)的纳秒,与 tick 一起下发给两路相机 → 同名配对
+      const int64_t ts2_ns = ts_reader_.get_sys_ns();
       {
         std::lock_guard<std::mutex> lk(trig_.mtx);
         trig_.ns = sys_ns;
+        trig_.sys_ns = ts2_ns;
         ++trig_.gen;
       }
       trig_.cv.notify_all();  // 唤醒两路相机线程
@@ -247,7 +257,7 @@ void CaptureNode::capture_loop(V4L2Camera &cam, const std::string &img_dir,
 
   while (running_) {
     // 等待下一个雷达 tick（同一 tick 唤醒两路 → 同名对齐）
-    int64_t tick_ns = 0;
+    int64_t ts2_ns = 0;
     {
       std::unique_lock<std::mutex> lk(trig_.mtx);
       trig_.cv.wait(lk, [this, &gen_seen] {
@@ -257,16 +267,18 @@ void CaptureNode::capture_loop(V4L2Camera &cam, const std::string &img_dir,
         break;
       }
       gen_seen = trig_.gen;
-      tick_ns = trig_.ns;
+      ts2_ns = trig_.sys_ns;
     }
 
-    // 用雷达纳秒戳生成文件名（与 Python 一致：%.6f.jpg）
-    char name[64];
-    std::snprintf(name, sizeof(name), "%.6f.jpg", tick_ns / 1e9);
-    const std::string path = img_dir + "/" + name;
-
     std::vector<uint8_t> buf;
-    if (cam.grab(buf)) {
+    int64_t frame_ns = 0;
+    if (cam.grab(buf, &frame_ns)) {
+      // 文件名第一段 = 驱动曝光时刻(v4l2_buffer.timestamp, 各相机独立)；
+      // 第二段 = trigger tick 的 timeshare 系统UTC(左右同 tick 同值 → 同名配对)
+      char name[64];
+      std::snprintf(name, sizeof(name), "%lld_%lld.jpg",
+                    static_cast<long long>(frame_ns), static_cast<long long>(ts2_ns));
+      const std::string path = img_dir + "/" + name;
       enqueue_save(path, std::move(buf), label);
       if (++save_count % 10 == 0) {
         std::size_t cur_dropped = 0;

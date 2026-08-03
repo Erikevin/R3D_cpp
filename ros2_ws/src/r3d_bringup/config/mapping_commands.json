@@ -2,5 +2,5 @@
   "_comment": "r3d_bringup 建图命令串。每个 value 作为后台进程经 bash -c 执行（不经 gnome-terminal），输出重定向到 /tmp/r3d_mapping_<name>.log；末尾用 exec ros2 ... 让 bash 直接替换成 workload。命令串可含任意 bash 语法（引号、$() 等）。桥按相对 cwd 读取(须从 ros2_ws 父目录启动)，可用 $R3D_MAPPING_CMD_FILE 覆盖为绝对路径。改完重启 r3d_ws_bridge 生效，无需重新编译。",
   "livox": "source /opt/ros/humble/setup.bash && source /root/my_robot_d/install/setup.bash && exec ros2 launch livox_ros_driver2 msg_MID360_launch.py",
   "lio_sam": "source /opt/ros/humble/setup.bash && source /root/my_robot_d/install/setup.bash && exec ros2 launch lio_sam run.launch.py cloud_frame_skip:=2 imu_odom_skip:=2",
-  "camera": "source /opt/ros/humble/setup.bash && source /root/my_robot_d/install/setup.bash && source /root/R3D_cpp/ros2_ws/install/setup.bash && exec ros2 run r3d_bringup image_odom_recorder"
+  "camera": "source /opt/ros/humble/setup.bash && source /root/my_robot_d/install/setup.bash && source /root/R3D_cpp/ros2_ws/install/setup.bash && exec ros2 run r3d_bringup image_odom_recorder --ros-args -p save_fps:=2"
 }

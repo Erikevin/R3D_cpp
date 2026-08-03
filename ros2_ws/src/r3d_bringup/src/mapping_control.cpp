@@ -125,36 +125,63 @@ pid_t MappingControl::launch_background(const std::string& cmd, const char* name
   return pid;
 }
 
-// SIGINT the whole process group -> poll waitpid(WNOHANG) up to 5s -> SIGKILL ->
-// blocking waitpid to reap. `pid` is the direct child PID; since the child did
-// setsid(), PID==PGID and kill(-pid, sig) hits the whole tree (bash -> ros2
-// launch -> every node) atomically and portably.
-void MappingControl::stop_background(pid_t pid) {
-  if (pid <= 0) return;
-
-  if (::kill(-pid, SIGINT) < 0 && errno != ESRCH) {
-    log::warn(std::string("[mapping] kill(-pid,SIGINT) pid=")
-              + std::to_string(pid) + ": " + std::strerror(errno));
+// fork + execvp pkill/pgrep. The child builds argv from stack arrays + snprintf
+// and calls only async-signal-safe functions — same fork-at-locked-mutex hazard
+// as spawn_background (bridge is multi-threaded), so no heap alloc / no mutex.
+//   is_kill=true  -> execvp("pkill", {"pkill","-<sig>","-f",pattern})
+//   is_kill=false -> execvp("pgrep",  {"pgrep","-f",pattern})
+// pkill/pgrep exit 0 when >=1 process matched, 1 when none matched. We map that
+// to a bool so callers can tell "delivered / still present" from "nothing there".
+bool MappingControl::run_pk(const char* pattern, int sig, bool is_kill) {
+  pid_t pid = ::fork();
+  if (pid < 0) {
+    log::error(std::string("[mapping] run_pk fork 失败: ") + std::strerror(errno));
+    return false;
   }
-
+  if (pid == 0) {
+    // child: async-signal-safe only
+    if (is_kill) {
+      char sigstr[16];
+      ::snprintf(sigstr, sizeof(sigstr), "-%d", sig);
+      char* argv[] = {const_cast<char*>("pkill"), sigstr,
+                      const_cast<char*>("-f"), const_cast<char*>(pattern), nullptr};
+      ::execvp("pkill", argv);
+    } else {
+      char* argv[] = {const_cast<char*>("pgrep"), const_cast<char*>("-f"),
+                      const_cast<char*>(pattern), nullptr};
+      ::execvp("pgrep", argv);
+    }
+    _exit(127);  // execvp failed
+  }
   int st = 0;
-  bool reaped = false;
-  // 5s graceful window; ROS2 + hardware drivers usually finish in 1-3s.
-  for (int i = 0; i < 50; ++i) {
-    pid_t r = ::waitpid(pid, &st, WNOHANG);
-    if (r == pid || (r < 0 && errno == ECHILD)) { reaped = true; break; }
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
   }
+  return WIFEXITED(st) && WEXITSTATUS(st) == 0;
+}
 
-  if (!reaped) {
-    if (::kill(-pid, SIGKILL) < 0 && errno != ESRCH) {
-      log::warn(std::string("[mapping] kill(-pid,SIGKILL) pid=")
-                + std::to_string(pid) + ": " + std::strerror(errno));
-    }
-    while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
-    }
+// Concurrently poll waitpid(WNOHANG) across several direct children for up to
+// grace_ms (100ms steps). Returns true once all are reaped (or were never our
+// child — ECHILD). Used to give a shared graceful window to several launches
+// without serializing the wait (lio_sam + livox stop in parallel).
+bool MappingControl::reap_all_within(const std::vector<pid_t>& pids, int grace_ms) {
+  std::vector<pid_t> pending;
+  for (pid_t p : pids) {
+    if (p > 0) pending.push_back(p);
   }
-  log::info(std::string("[mapping] 进程已停止  pid=") + std::to_string(pid));
+  const int step_ms = 100;
+  for (int i = 0; i < grace_ms / step_ms && !pending.empty(); ++i) {
+    for (auto it = pending.begin(); it != pending.end();) {
+      int st = 0;
+      pid_t r = ::waitpid(*it, &st, WNOHANG);
+      if (r == *it || (r < 0 && errno == ECHILD)) {
+        it = pending.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    if (!pending.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(step_ms));
+  }
+  return pending.empty();
 }
 
 // ---- device info -----------------------------------------------------------
@@ -324,22 +351,29 @@ MappingControl::LoadedCommands MappingControl::load_commands_from_file() {
 }
 
 void MappingControl::start_mapping_commands() {
-  std::vector<pid_t> local;
   try {
     log::info("🔹 启动 Livox 驱动");
-    if (pid_t pid = launch_background(cmds_.livox, "livox"); pid > 0) local.push_back(pid);
+    if (pid_t pid = launch_background(cmds_.livox, "livox"); pid > 0) {
+      std::lock_guard<std::mutex> lk(m_);
+      livox_pid_ = pid;
+    }
     std::this_thread::sleep_for(std::chrono::seconds(5));
 
     log::info("🔹 启动 LIO-SAM");
-    if (pid_t pid = launch_background(cmds_.lio_sam, "lio_sam"); pid > 0) local.push_back(pid);
+    if (pid_t pid = launch_background(cmds_.lio_sam, "lio_sam"); pid > 0) {
+      std::lock_guard<std::mutex> lk(m_);
+      lio_sam_pid_ = pid;
+    }
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
     log::info("🔹 启动相机录制");
-    if (pid_t pid = launch_background(cmds_.camera, "camera"); pid > 0) local.push_back(pid);
+    if (pid_t pid = launch_background(cmds_.camera, "camera"); pid > 0) {
+      std::lock_guard<std::mutex> lk(m_);
+      camera_pid_ = pid;
+    }
 
     {
       std::lock_guard<std::mutex> lk(m_);
-      pids_ = std::move(local);
       mapping_ready_ = true;
     }
     log::info("✅ 建图启动完成，开始发送数据");
@@ -351,23 +385,81 @@ void MappingControl::start_mapping_commands() {
 }
 
 void MappingControl::close_all_windows() {
-  std::vector<pid_t> local;
+  // 锁内拷贝 pid 快照，并立即清空 —— 防止 stopRecord 线程与析构并发时二次停止。
+  pid_t livox, liosam, camera;
   {
     std::lock_guard<std::mutex> lk(m_);
-    local = pids_;
+    livox = livox_pid_;
+    liosam = lio_sam_pid_;
+    camera = camera_pid_;
+    livox_pid_ = lio_sam_pid_ = camera_pid_ = -1;
+    mapping_ready_ = false;
   }
   log::info("🧹 正在安全停止所有建图进程...");
 
-  // stop_background() 自带 SIGINT -> 5s 轮询 -> SIGKILL -> 回收，串行逐个停止。
-  for (pid_t pid : local) {
-    stop_background(pid);
+  // ============ 阶段 1：并发停 CPU 大头（lio_sam + livox）============
+  // 先停它们两个收益：① 释放 CPU/IO；② bag 录的正是 /livox/imu /livox/lidar、
+  // odom 订阅 /lio_sam/mapping/odometry —— 停了即掐断数据源，bag 缓冲不再增长，
+  // 阶段 2 的 flush 量固定且小。camera 触发用 steady_clock 自驱，不依赖 livox。
+  //
+  // 这两个是 ros2 launch 拉起的树：launch 给每个节点 setsid → 节点脱离 launch 主
+  // 进程的进程组，kill(-launch_pid) 够不到节点（这正是旧 stop_background 偶尔漏杀、
+  // 节点残留的根因）。改用 pkill -f 按命令行点名 —— 同时命中 ros2 launch 主进程与
+  // 各节点进程，绕开进程组。
+  log::info("🔹 [阶段1] 停止 lio_sam + livox（释放 CPU / 断 bag·odom 数据源）");
+  run_pk("lio_sam", SIGINT, true);
+  run_pk("livox_ros_driver2", SIGINT, true);
+
+  std::vector<pid_t> stage1;
+  if (liosam > 0) stage1.push_back(liosam);
+  if (livox > 0) stage1.push_back(livox);
+  // lio_sam 存 PCD / GTSAM 因子图清理耗时，给 8s 优雅窗口；并发 reap 两个 launch 主进程。
+  if (!reap_all_within(stage1, 8000)) {
+    log::warn("[mapping] 阶段1 超时，SIGKILL 强杀残留 lio_sam/livox");
+    run_pk("lio_sam", SIGKILL, true);
+    run_pk("livox_ros_driver2", SIGKILL, true);
+    for (pid_t p : stage1) {  // 阻塞回收未退出的 launch 主进程，避免僵尸
+      int st = 0;
+      while (::waitpid(p, &st, 0) < 0 && errno == EINTR) {
+      }
+    }
   }
 
-  {
-    std::lock_guard<std::mutex> lk(m_);
-    pids_.clear();
-    mapping_ready_ = false;
+  // ============ 阶段 2：停 camera + bag（CPU 已空闲、数据源已断）============
+  // image_odom_recorder 由 exec ros2 run 拉起、自任组长；其 start_bag() fork 的
+  // ros2 bag record 未 setsid → 与节点同组。故 kill(-camera_pid) 组播 SIGINT 能同时
+  // 命中节点与 bag，节点析构 ~CaptureNode→stop_bag 再给 bag SIGINT 并轮询 3s flush。
+  // 维持 5s 优雅窗口：阶段 1 完成后 bag flush 量小，5s 足够。
+  log::info("🔹 [阶段2] 停止 camera + bag");
+  if (camera > 0) {
+    if (::kill(-camera, SIGINT) < 0 && errno != ESRCH) {
+      log::warn(std::string("[mapping] kill(-camera,SIGINT): ") + std::strerror(errno));
+    }
+    if (!reap_all_within({camera}, 5000)) {
+      // 超时：只 SIGKILL 节点组长，【绝不组播 -camera SIGKILL】—— 会打穿正在 flush 的
+      // rosbag2（丢缓冲 / 损坏 bag）。bag 子进程的善后单独处理。
+      log::warn("[mapping] 阶段2 超时，SIGKILL camera 节点（不组播，保护 bag）");
+      ::kill(camera, SIGKILL);
+      int st = 0;
+      while (::waitpid(camera, &st, 0) < 0 && errno == EINTR) {
+      }
+      // 兜底：节点被强杀可能没走到析构的 stop_bag，bag 沦为孤儿。单独给它 SIGINT + 3s
+      // flush 窗口（CPU 已空闲，flush 很快），仍未退才 SIGKILL（可能丢末尾缓冲）。
+      if (run_pk("ros2 bag record", 0, false)) {
+        log::warn("[mapping] bag 残留，单独 SIGINT + 3s flush 窗口");
+        run_pk("ros2 bag record", SIGINT, true);
+        for (int i = 0; i < 30; ++i) {  // 3s
+          if (!run_pk("ros2 bag record", 0, false)) break;
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (run_pk("ros2 bag record", 0, false)) {
+          log::warn("[mapping] bag 仍未退出，SIGKILL（可能丢末尾缓冲）");
+          run_pk("ros2 bag record", SIGKILL, true);
+        }
+      }
+    }
   }
+
   log::info("✅ 所有建图进程已停止");
 }
 

@@ -4,9 +4,19 @@
 // close_all_windows, get_pcd_file_list, write_shared_cmd).
 //
 // start_mapping_commands() launches Livox / LIO-SAM / recorder as background
-// processes (setsid) with stdout/stderr to /tmp/r3d_mapping_<name>.log, and
-// stops them via kill(-pid) on the whole process group — no gnome-terminal /
-// xdotool, so it works on headless hosts (e.g. OrangePi 3B).
+// processes (setsid) with stdout/stderr to /tmp/r3d_mapping_<name>.log — no
+// gnome-terminal / xdotool, so it works on headless hosts (e.g. OrangePi 3B).
+//
+// close_all_windows() stops them in TWO phases:
+//  Phase 1 — lio_sam + livox (the CPU hogs): these are ros2 launch trees whose
+//    nodes are setsid'd into their own session by launch, so kill(-pgid) can't
+//    reach them. We pkill -f by command line (hits launch proc + every node)
+//    and reap the launch PIDs concurrently. Stopping them first also cuts the
+//    bag/odom data sources (bag records /livox/*, odom subs /lio_sam/*).
+//  Phase 2 — camera + bag (5s): image_odom_recorder is its own group leader and
+//    its forked ros2 bag record shares the group, so kill(-camera_pid) reaches
+//    both. On timeout we SIGKILL only the leader (never the group — that would
+//    punch through a flushing rosbag2) and separately retire any orphaned bag.
 
 #include <nlohmann/json.hpp>
 
@@ -55,8 +65,15 @@ class MappingControl {
   static pid_t spawn_background(const std::string& cmd, const std::string& logfile);
   // Spawn cmd logged to /tmp/r3d_mapping_<name>.log; returns pid or -1.
   static pid_t launch_background(const std::string& cmd, const char* name);
-  // kill(-pid, SIGINT) the whole group, poll up to 5s, then SIGKILL + reap.
-  static void stop_background(pid_t pid);
+  // fork + execvp pkill/pgrep — async-signal-safe child (stack argv, snprintf,
+  // execvp; no heap alloc / mutex, same fork-safety rationale as spawn_background).
+  //   is_kill=true  -> pkill -<sig> -f pattern  (deliver signal)
+  //   is_kill=false -> pgrep -f pattern         (detect only)
+  // Returns whether any process matched (pkill/pgrep exit 0 = match, 1 = none).
+  static bool run_pk(const char* pattern, int sig, bool is_kill);
+  // Concurrently poll waitpid(WNOHANG) on several direct children for up to
+  // grace_ms. Returns true if all were reaped (or were never our child, ECHILD).
+  static bool reap_all_within(const std::vector<pid_t>& pids, int grace_ms);
 
   // Three command strings, loaded once from JSON (or built-in defaults on any
   // failure). Immutable after construction — read by start_mapping_commands().
@@ -71,7 +88,11 @@ class MappingControl {
   static LoadedCommands load_commands_from_file();
 
   mutable std::mutex m_;
-  std::vector<pid_t> pids_;      // child PIDs (== PGIDs) of running mapping procs
+  // Launch PIDs (== PGIDs after setsid) of the three mapping procs. livox/lio_sam
+  // are ros2 launch trees; camera is exec ros2 run (group leader, bag shares group).
+  pid_t livox_pid_{-1};
+  pid_t lio_sam_pid_{-1};
+  pid_t camera_pid_{-1};
   bool mapping_ready_{false};
   const LoadedCommands cmds_;  // write-once in ctor; read-only thereafter
 };

@@ -296,7 +296,7 @@ MappingControl::LoadedCommands MappingControl::load_commands_from_file() {
       "source ros2_ws/install/setup.bash && "
       "exec ros2 run r3d_bringup image_odom_recorder";
 
-  LoadedCommands out{kDefLivox, kDefLioSam, kDefCamera};
+  LoadedCommands out{kDefLivox, kDefLioSam, kDefCamera, ""};  // data_dir 默认空=用节点默认
 
   // 1) 解析路径：优先 $R3D_MAPPING_CMD_FILE，否则默认相对 cwd 路径。
   const char* env = std::getenv(config::MAPPING_CMD_FILE_ENV);
@@ -346,6 +346,14 @@ MappingControl::LoadedCommands MappingControl::load_commands_from_file() {
   apply("lio_sam", out.lio_sam);
   apply("camera", out.camera);
 
+  // data_dir 是可选配置（非命令串）：相机图片 / odom / rosbag 的存储根目录，启动
+  // camera 时桥注入 `-p output_dir:=<data_dir>`。缺失或留空都静默接受为 ""，
+  // 此时节点用默认 ~/Desktop/save_pcd/<时间戳>。不走 apply()——它对缺失/空会告警，
+  // 对可选项是无意义噪音。
+  if (j.contains("data_dir") && j.at("data_dir").is_string()) {
+    out.data_dir = j.at("data_dir").get<std::string>();
+  }
+
   log::info(std::string("已加载建图命令配置: ") + path);
   return out;
 }
@@ -367,7 +375,15 @@ void MappingControl::start_mapping_commands() {
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
     log::info("🔹 启动相机录制");
-    if (pid_t pid = launch_background(cmds_.camera, "camera"); pid > 0) {
+    // data_dir 非空时注入 -p output_dir:=<data_dir>：相机图片/odom/rosbag 的存储根。
+    // 单引号包裹路径，兼容含空格/特殊字符的 data_dir（命令串经 bash -c 执行，会正确去引号）。
+    // 节点在 <data_dir>/<时间戳>/ 下落盘（每次录制新建子目录，不覆盖）。
+    std::string cam_cmd = cmds_.camera;
+    if (!cmds_.data_dir.empty()) {
+      cam_cmd += " -p output_dir:='" + cmds_.data_dir + "'";
+      log::info(std::string("[mapping] 数据存储根目录: ") + cmds_.data_dir + "/<时间戳>");
+    }
+    if (pid_t pid = launch_background(cam_cmd, "camera"); pid > 0) {
       std::lock_guard<std::mutex> lk(m_);
       camera_pid_ = pid;
     }

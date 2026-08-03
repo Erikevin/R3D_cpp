@@ -77,10 +77,13 @@ class MappingControl {
 
   // Three command strings, loaded once from JSON (or built-in defaults on any
   // failure). Immutable after construction — read by start_mapping_commands().
+  // data_dir 是相机图片/odom/rosbag 的存储根目录（非命令串）：启动 camera 时桥自动
+  // 追加 `-p output_dir:=<data_dir>` 注入 image_odom_recorder；留空则用节点默认。
   struct LoadedCommands {
     std::string livox;
     std::string lio_sam;
     std::string camera;
+    std::string data_dir;
   };
   // Reads $R3D_MAPPING_CMD_FILE (else MAPPING_CMD_FILE_DEFAULT rel. to cwd); on
   // any error the affected field — or all fields — falls back to the built-in

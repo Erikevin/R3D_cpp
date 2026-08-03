@@ -90,9 +90,13 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
   cam2_cfg_ = CamConfig{dev2, w, h, cam_fps_, true, true, q};
 
   // ---- 输出目录 ----
+  // output_dir_ 作为存储根目录：默认 ~/Desktop/save_pcd，或由外部 output_dir 参数指定
+  // （桥从 mapping_commands.json 的 data_dir 注入）。无论哪种，都在其下新建 <时间戳>/
+  // 子目录，确保每次录制互不覆盖；images/camera{0,1}、odom.txt、rosbag2/ 全在此子目录下。
   if (output_dir_.empty()) {
-    output_dir_ = home_dir() + "/Desktop/save_pcd/" + timestamp_dir();
+    output_dir_ = home_dir() + "/Desktop/save_pcd";
   }
+  output_dir_ += "/" + timestamp_dir();
   img_dir0_ = output_dir_ + "/images/camera0";
   img_dir1_ = output_dir_ + "/images/camera1";
   std::filesystem::create_directories(img_dir0_);

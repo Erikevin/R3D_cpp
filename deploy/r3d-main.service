@@ -37,6 +37,13 @@ ExecStart=/root/R3D_cpp/build/r3d_main
 
 # r3d_main 自身不读这些；显式设上仅供其 fork 出的桥/建图子进程定位路径，防默认漂移
 Environment=R3D_ROS_WS=/root/R3D_cpp/ros2_ws
+# ROS_DOMAIN_ID=42 让 r3d_main 经 fork 链派生的所有 ROS 进程（桥 r3d_ws_bridge，
+# 以及桥再 fork 的 livox/lio_sam/camera）落在同一 DDS domain：彼此互通，且与局域网
+# 默认 domain 0 的节点互不可见。r3d_main 本体无 ROS，此变量仅靠 fork 继承传递——
+# service→r3d_main→bash(source..exec ros2 run)→r3d_ws_bridge→bash(setsid -c livox/..)。
+# source /opt/ros/humble/setup.bash 不会覆盖本变量。若要彻底不收发局域网多播（纯本机
+# 隔离，但会禁止跨机通信），再加一行 Environment=ROS_LOCALHOST_ONLY=1。
+Environment=ROS_DOMAIN_ID=42
 Environment=LANG=C.UTF-8
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 

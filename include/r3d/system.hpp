@@ -55,6 +55,9 @@ public:
 
 private:
     void debug_console();
+    // Block (up to timeout_sec, 500 ms steps) until the mapping children
+    // (livox/lio_sam/image_odom_recorder/bag) are gone; SIGKILL stragglers on timeout.
+    void wait_mapping_idle(int timeout_sec);
     // Background supervisor: if the bridge dies, set bridge_died_ and stop the main
     // loop so r3d_main exits non-zero → r3d-main.service restarts (which first kills
     // whoever holds 8765, then relaunches the bridge).
@@ -70,6 +73,7 @@ private:
     std::atomic<bool> initialized_{false};  // set true at end of init_all()
 
     std::atomic<bool> bridge_died_{false};   // set by monitor_bridge() on bridge exit
+    std::atomic<bool> bridge_confirmed_alive_{false};  // set once monitor sees the bridge alive
     std::thread bridge_mon_;                  // runs monitor_bridge()
 };
 

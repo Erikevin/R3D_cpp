@@ -35,7 +35,10 @@ inline constexpr int MAIN_LOOP_IDLE_MS       = 100;  // main state-loop idle sle
 inline constexpr int CAMERA_ERROR_RECHECK_MS = 200;  // recheck after camera-offline
 inline constexpr int RADAR_RESEND_SEC        = 1;    // RADAR_ON/OFF sent twice, this apart
 inline constexpr int SERIAL_RECV_POLL_MS     = 10;   // uart recv loop poll
-inline constexpr int ALLOW_SHUTDOWN_DELAY_MS = 500;  // pause after ALLOW_SHUTDOWN → callback
+inline constexpr int ALLOW_SHUTDOWN_DELAY_MS  = 500;  // pause after final ALLOW_SHUTDOWN → callback
+inline constexpr int ALLOW_SHUTDOWN_RETRIES   = 3;    // low-battery: send ALLOW_SHUTDOWN N times (guard against dropped frames)
+inline constexpr int ALLOW_SHUTDOWN_RETRY_SEC = 1;    // interval between repeated ALLOW_SHUTDOWN sends
+inline constexpr int SHUTDOWN_GRACE_SEC       = 15;   // max wait for mapping to stop cleanly before power-off
 inline constexpr int PROTECTION_HEARTBEAT_SEC = 1;   // protection monitor tick
 inline constexpr int DAEMON_RESTART_SEC      = 3;    // respawn wait after r3d_main crash
 
@@ -71,6 +74,10 @@ inline const std::string RADAR_OFF      = std::string("\x5C\x34\x00\x00\x00\x00\
 // ---- IPC -------------------------------------------------------------------
 // Shared command file (bridge writes, r3d_main reads). Holds {"cmd": N}.
 inline const std::string SHARE_FILE = "/tmp/shared_cmd.txt";
+// Telemetry file (r3d_main writes, bridge reads) so deviceInfo reports the real
+// battery level instead of a hardcoded value. Holds {"battery":N,"voltage":V,"temp":T}.
+// /tmp is tmpfs → memory-only I/O, never contends with rosbag2/PCD disk writes.
+inline const std::string TELEMETRY_FILE = "/tmp/shared_telemetry.txt";
 inline constexpr int     CMD_RADAR_ON  = 1;   // open radar / start mapping
 inline constexpr int     CMD_RADAR_OFF = 0;   // close radar / stop mapping
 

@@ -44,6 +44,7 @@ The Python tree is organised into three runtime tiers:
                             |                              |
                             |   /tmp/shared_cmd.txt        | xdotool/gnome-terminal
                             |   {"cmd": 1|0}               | launches:
+                            |   /tmp/shared_telemetry.txt  |
                             v                              v
                    radar power relay        livox_driver2 / lio_sam / r3d_camera
                                                      |
@@ -56,10 +57,22 @@ The Python tree is organised into three runtime tiers:
                                     writes JPEG + odom.txt under save_pcd/<ts>/
 ```
 
-Two processes talk **only** through the file `/tmp/shared_cmd.txt` (`{"cmd": 1}` =
-radar ON / start mapping, `{"cmd": 0}` = OFF / stop). The Livox driver writes its
-current timestamp into a 16-byte mmap file `~/timeshare`; the camera node reads it
-so every photo is stamped with the **real LiDAR time** (post-processing alignment).
+The two processes (Tier-A `r3d_main` and Tier-B `r3d_ws_bridge`) talk **only**
+through two `/tmp` files (both on tmpfs → memory-only, no disk IO, so they never
+contend with the rosbag2/PCD writes happening during mapping):
+- `/tmp/shared_cmd.txt` `{"cmd": 1|0}` — **bridge writes** on start/stopRecord,
+  `r3d_main` reads (radar ON/OFF + mapping start/stop).
+- `/tmp/shared_telemetry.txt` `{"battery":N,"voltage":V,"temp":T}` — `r3d_main`
+  **writes** after parsing each `0x31` frame (throttled to battery-% changes, atomic
+  tmp+rename); the bridge reads it in `device_info()` so the mobile app's battery
+  level tracks the real serial reading (falls back to `78` if the file is absent).
+
+Both paths are defined in **each** project's config.hpp — `include/r3d/config.hpp`
+(Tier-A) and `ros2_ws/src/r3d_bringup/include/r3d_ws/config.hpp` (Tier-B) — so
+changing a path means editing both, or the reader/writer desync. The Livox driver
+writes its current timestamp into a 16-byte mmap file `~/timeshare`; the camera node
+reads it so every photo is stamped with the **real LiDAR time** (post-processing
+alignment).
 
 ---
 
@@ -89,6 +102,11 @@ Every received chunk is shown as raw hex, then each `0x31` frame is decoded
 [HH:MM:SS.mmm][INFO] [串口] 遥测: 电压=12.58V  温度=35  电量=87%  关机请求=否
 ```
 All log lines carry **millisecond** timestamps (`[HH:MM:SS.mmm]`, see `logger.hpp`).
+
+The decoded `battery` / `voltage` / `temp` are also published to
+`/tmp/shared_telemetry.txt` (atomic tmp+rename, throttled to battery-% changes even
+though every frame is logged) so the bridge's `device_info()` can report the real
+level to the mobile app instead of a hardcoded value — see §2.
 
 ### 3.2 Jetson → power board — commands
 

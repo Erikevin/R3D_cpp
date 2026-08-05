@@ -14,6 +14,7 @@ namespace r3d {
 Hardware::~Hardware() { exit_clean(); }
 
 bool Hardware::init() {
+    if (gpio_) return true;   // idempotent: start_main_flow calls us early to light the LEDs
     log::info("\n========================");
     log::info("[硬件初始化开始]");
     bool ok = true;
@@ -23,6 +24,7 @@ bool Hardware::init() {
 
         if (!gpio_->setup()) {
             log::error("[硬件初始化 -> 失败！] GPIO setup");
+            gpio_.reset();   // discard the half-init backend so init() can be retried
             return false;
         }
 
@@ -38,6 +40,7 @@ bool Hardware::init() {
         log::info("[硬件初始化 -> 全部成功]");
     } catch (const std::exception& e) {
         log::error(std::string("[硬件初始化 -> 失败！] ") + e.what());
+        gpio_.reset();   // partial init → discard so the idempotent guard stays correct
         ok = false;
     }
     log::info("========================");

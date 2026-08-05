@@ -6,9 +6,11 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <sys/select.h>
+#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>   // access(), execlp()
 
@@ -51,10 +53,12 @@ void System::update_led() {
     hw_.green(false);
     hw_.red(false);
     switch (state_) {
+        case config::State::Init:        hw_.green(true); hw_.red(true); break;  // 启动中：红绿都亮
         case config::State::Run:        hw_.green(true); break;
         case config::State::Error:      hw_.red(true);   break;
         case config::State::LowBattery: hw_.red(true);   break;
-        default: break;
+        case config::State::Shutdown:   hw_.red(true);   break;  // 关机流程：只亮红灯
+        default: break;   // Scan：交给 start_scan_pwm 闪烁绿灯，这里不干预
     }
 }
 
@@ -70,6 +74,8 @@ void System::boot_wait() {
 
 bool System::init_all() {
     if (!hw_.init()) return false;
+    // GPIO 就绪即点亮启动态：此时 state_ 仍为 Init → 红绿都亮，直到 set_state(Run/Error)。
+    update_led();
     if (!serial_.open()) return false;
     initialized_ = true;   // unblocks monitor_shared_cmd() to act on commands
     return true;
@@ -107,7 +113,15 @@ void System::shutdown() {
     if (shutting_down_.exchange(true)) return;
 
     log::info("[系统] 开始关机...");
-    set_state(config::State::Shutdown);
+    set_state(config::State::Shutdown);   // update_led 的 Shutdown 分支 → 只亮红灯
+
+    // 优雅停 r3d_bringup：给桥 SIGTERM 触发其析构链 → MappingControl::close_all_windows
+    // （lio_sam 存 PCD ~8s、bag flush ~5s）。bridge_.stop() 只 reap 启动器 500ms、不等
+    // close_all_windows 跑完，所以再由 wait_mapping_idle 观测建图子进程直至退出（或超时兜底）。
+    bridge_.stop();
+    wait_mapping_idle(config::SHUTDOWN_GRACE_SEC);
+
+    // 退出前关红灯 + 清 GPIO（绿/红/scan 全灭），再 exec 真正的关机。
     hw_.exit_clean();
     serial_.close();
 
@@ -118,6 +132,37 @@ void System::shutdown() {
     // Reached only if exec failed (binary missing / not root). Stay tidy and exit.
     log::error("[系统] shutdown 执行失败 — 请以 root 运行或确认 shutdown 已安装");
     g_running = false;
+}
+
+// Block until the mapping children (spawned by the bridge) exit, or timeout_sec
+// elapses. The bridge was just SIGTERM'd, so its close_all_windows() is what stops
+// livox/lio_sam/camera; we only observe via pgrep. On timeout, SIGKILL stragglers so
+// power-off isn't blocked indefinitely (may lose tail-end bag/PCD data).
+void System::wait_mapping_idle(int timeout_sec) {
+    static const char* patterns[] = {
+        "livox_ros_driver2", "lio_sam", "image_odom_recorder", "ros2 bag record"
+    };
+    const int step_ms = 500;
+    for (int elapsed = 0; elapsed < timeout_sec * 1000; elapsed += step_ms) {
+        bool any = false;
+        for (const char* p : patterns) {
+            std::string cmd = std::string("/usr/bin/pgrep -f ") + p + " >/dev/null 2>&1";
+            int rc = std::system(cmd.c_str());
+            if (WIFEXITED(rc) && WEXITSTATUS(rc) == 0) { any = true; break; }
+        }
+        if (!any) {
+            log::info("[系统] 建图进程已全部优雅退出");
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(step_ms));
+    }
+    log::warn(std::string("[系统] 建图停止超时(") + std::to_string(timeout_sec) +
+              "s)，SIGKILL 兜底（可能丢末尾数据）");
+    int k = std::system("/usr/bin/pkill -9 -f livox_ros_driver2; "
+                        "/usr/bin/pkill -9 -f lio_sam; "
+                        "/usr/bin/pkill -9 -f image_odom_recorder; "
+                        "/usr/bin/pkill -9 -f 'ros2 bag record'");
+    (void)k;
 }
 
 void System::debug_console() {
@@ -177,6 +222,13 @@ void System::debug_console() {
 
 int System::start_main_flow() {
     log::info("==== 系统启动 ====");
+
+    // Light the startup indicator as early as possible: the moment GPIO is ready,
+    // drive the Init state (red+green both on). hw_.init() is idempotent — init_all()
+    // calls it again later and returns immediately. Before this point GPIO is not
+    // initialized, so the pins physically cannot be driven yet.
+    if (hw_.init()) update_led();   // state_ is still Init → red+green on
+
     boot_wait();
 
     // Mirror Auto_start.py: bring up the bridge (r3d_bringup) early so the mobile
@@ -193,8 +245,24 @@ int System::start_main_flow() {
         log::error("初始化失败");
         set_state(config::State::Error);
     } else {
-        log::info("初始化成功");
-        set_state(config::State::Run);
+        log::info("初始化成功，等待 r3d_bringup 确认存活...");
+        // 红灯只在桥确认存活后才灭（需求：r3d_bringup 成功调起且无异常时红灯灭、
+        // 只绿灯亮）。monitor_bridge 每 ~1s 给出一次结论：alive → bridge_confirmed_alive_，
+        // dead → bridge_died_ 且 g_running=false。任一发生即退出等待；INIT_TIMEOUT 仅作
+        // 兜底（正常 ~1s 内必有结论）。
+        for (int elapsed = 0; elapsed < config::INIT_TIMEOUT * 1000;
+             elapsed += config::IPC_POLL_MS) {
+            if (bridge_confirmed_alive_.load() || bridge_died_.load() || !g_running) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(config::IPC_POLL_MS));
+        }
+        if (bridge_confirmed_alive_.load() && g_running) {
+            log::info("r3d_bringup 已就绪 → 红灯灭，只绿灯亮");
+            set_state(config::State::Run);
+        } else {
+            // 桥未确认存活（已死 / 超时 / 正在停机）→ 保持红灯，不进 Run。
+            log::error("r3d_bringup 未确认存活，保持红灯");
+            set_state(config::State::Error);
+        }
     }
 
     protect_.start_monitor();
@@ -228,6 +296,9 @@ int System::start_main_flow() {
 
 // Watch the bridge; on exit, flag it and unblock the main loop so r3d_main returns
 // non-zero and r3d-main.service restarts (freeing 8765, then relaunching the bridge).
+// Also latches bridge_confirmed_alive_ the first time we see it running — start_main_flow
+// waits on that before leaving Init (red+green) for Run (green only), so the red LED is
+// not turned off until r3d_bringup is actually up.
 void System::monitor_bridge() {
     while (g_running) {
         for (int i = 0; i < 10 && g_running; ++i)   // 1 s heartbeat, 100 ms slices
@@ -240,6 +311,7 @@ void System::monitor_bridge() {
             g_running = false;   // unblock the main loop → cleanup → non-zero return
             return;
         }
+        bridge_confirmed_alive_ = true;   // seen alive at least once → OK to enter Run
     }
 }
 

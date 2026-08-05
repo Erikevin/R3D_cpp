@@ -39,6 +39,7 @@ private:
     std::atomic<bool> running_{false};
     bool shutdown_triggered_{false};  // latch: run the shutdown flow only once
     bool fan_auto_on_{false};         // auto-fan state (edge-triggered on temp threshold)
+    int  last_batt_written_{-1};      // throttle: rewrite telemetry file only on battery-% change
     std::thread recv_thread_;
     std::thread::id  recv_tid_;     // so close() can avoid joining itself
     ShutdownCallback on_shutdown_;

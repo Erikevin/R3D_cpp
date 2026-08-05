@@ -139,24 +139,32 @@ bool MappingControl::run_pk(const char* pattern, int sig, bool is_kill) {
     return false;
   }
   if (pid == 0) {
-    // child: async-signal-safe only
+    // child: async-signal-safe only. 绝对路径优先 —— 桥由 systemd 拉起时 PATH 可能
+    // 精简，execvp("pkill") 可能找不到；execv("/usr/bin/pkill") 不依赖 PATH。
     if (is_kill) {
       char sigstr[16];
       ::snprintf(sigstr, sizeof(sigstr), "-%d", sig);
       char* argv[] = {const_cast<char*>("pkill"), sigstr,
                       const_cast<char*>("-f"), const_cast<char*>(pattern), nullptr};
-      ::execvp("pkill", argv);
+      ::execv("/usr/bin/pkill", argv);
+      ::execvp("pkill", argv);  // fallback：非标准安装路径再按 PATH 找一次
     } else {
       char* argv[] = {const_cast<char*>("pgrep"), const_cast<char*>("-f"),
                       const_cast<char*>(pattern), nullptr};
+      ::execv("/usr/bin/pgrep", argv);
       ::execvp("pgrep", argv);
     }
-    _exit(127);  // execvp failed
+    _exit(127);  // execv/execvp 均失败
   }
   int st = 0;
   while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {
   }
-  return WIFEXITED(st) && WEXITSTATUS(st) == 0;
+  // 退出码语义（procps）：0=匹配到并已发信号/已列出，1=无匹配，127=exec 失败。
+  const int rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+  log::info(std::string("[mapping] run_pk ") + (is_kill ? "pkill" : "pgrep") + " -f '" +
+            pattern + "' rc=" + std::to_string(rc) +
+            (rc == 0 ? "(命中)" : rc == 1 ? "(无匹配)" : rc == 127 ? "(exec失败)" : "(异常)"));
+  return rc == 0;
 }
 
 // Concurrently poll waitpid(WNOHANG) across several direct children for up to
@@ -189,7 +197,27 @@ nlohmann::json MappingControl::device_info() {
   nlohmann::json info;
   info["version"]    = "R3D_V1_0_0";
   info["deviceCode"] = "B258A49D02";
-  info["battery"]    = 78;
+  // battery: read the real level published by r3d_main to the shared telemetry
+  // file; fall back to 78 when r3d_main hasn't published yet (file missing /
+  // unreadable / malformed). /tmp is tmpfs, so this read is memory-only and
+  // never contends with rosbag2/PCD disk writes even under periodic getStorage.
+  int battery = 78;
+  {
+    std::ifstream f(config::TELEMETRY_FILE);
+    if (f) {
+      std::stringstream ss;
+      ss << f.rdbuf();
+      try {
+        auto j = nlohmann::json::parse(ss.str());
+        if (j.contains("battery") && j["battery"].is_number_integer()) {
+          battery = j["battery"].get<int>();
+        }
+      } catch (const std::exception&) {
+        // stale/partial write (atomic rename should prevent this) → keep default
+      }
+    }
+  }
+  info["battery"]    = battery;
   info["wsStatus"]   = "已连接";
 
   struct statvfs vfs;
@@ -412,6 +440,9 @@ void MappingControl::close_all_windows() {
     mapping_ready_ = false;
   }
   log::info("🧹 正在安全停止所有建图进程...");
+  log::info(std::string("[mapping] close_all_windows pid 快照 livox=") + std::to_string(livox) +
+            " lio_sam=" + std::to_string(liosam) + " camera=" + std::to_string(camera) +
+            " (-1=未启动/已清空)");
 
   // ============ 阶段 1：并发停 CPU 大头（lio_sam + livox）============
   // 先停它们两个收益：① 释放 CPU/IO；② bag 录的正是 /livox/imu /livox/lidar、

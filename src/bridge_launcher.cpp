@@ -151,11 +151,22 @@ void BridgeLauncher::stop() {
 
 bool BridgeLauncher::is_alive() {
     std::lock_guard<std::mutex> lk(m_);
-    if (pid_ <= 0) return false;
-    pid_t r = ::waitpid(pid_, nullptr, WNOHANG);
-    if (r == 0) return true;   // still running
-    pid_ = -1;                 // reaped (r == pid) or already gone (ECHILD) → cleared
-    return false;
+    if (pid_ > 0) {
+        pid_t r = ::waitpid(pid_, nullptr, WNOHANG);
+        if (r == 0) return true;   // tracked child still running
+        pid_ = -1;                 // reaped (r == pid) or already gone (ECHILD) → cleared
+        // fall through: the child we tracked is gone, but in gnome-terminal mode
+        // that child was just the launcher, which exits 0 on hand-off — judge by
+        // the node's actual presence instead.
+    }
+    // pid_ <= 0: never forked, or the launcher was reaped after handing off to the
+    // terminal server. Either way pid_ can't track the real node long-term, so match
+    // by node name — consistent with stop()'s `pkill -f r3d_ws_bridge`. Headless mode
+    // exec-replaces the launcher into r3d_ws_bridge, so the name matches there too.
+    std::string cmd = std::string("/usr/bin/pgrep -f ") + config::BRIDGE_NODE +
+                      " >/dev/null 2>&1";
+    int rc = std::system(cmd.c_str());
+    return WIFEXITED(rc) && WEXITSTATUS(rc) == 0;
 }
 
 } // namespace r3d

@@ -28,6 +28,9 @@ inline constexpr unsigned short WS_PORT = 8765;
 // ---- Paths -----------------------------------------------------------------
 inline constexpr const char* SAVE_PCD_DIR = "/home/jetson/Desktop/save_pcd/";
 inline constexpr const char* SHARE_FILE   = "/tmp/shared_cmd.txt";
+// Telemetry published by r3d_main (battery/voltage/temp). Bridge reads battery
+// from here in deviceInfo. /tmp is tmpfs → memory-only, no disk contention.
+inline constexpr const char* TELEMETRY_FILE = "/tmp/shared_telemetry.txt";
 
 // ---- Mapping command configuration (externalized JSON) ---------------------
 // JSON holding the three background-process command strings for

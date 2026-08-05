@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <thread>
 #include <vector>
 
@@ -110,6 +111,29 @@ void SerialProtocol::parse_buffer(const unsigned char* data, std::size_t len) {
                   "  电量=" + std::to_string(battery) + "%" +
                   "  关机请求=" + (power_off > 0 ? "是" : "否"));
 
+        // Publish battery/voltage/temp to the shared telemetry file so the bridge
+        // can report the real battery level in deviceInfo instead of a hardcoded
+        // value. Throttled to integer battery changes: the cyclic 0x31 frame
+        // arrives several times per second, but battery drifts over minutes →
+        // near-zero writes. File is on /tmp (tmpfs), so this never contends with
+        // the rosbag2/PCD disk writes happening during mapping.
+        if (static_cast<int>(battery) != last_batt_written_) {
+            const std::string tmp = std::string(config::TELEMETRY_FILE) + ".tmp";
+            bool ok = false;
+            {
+                std::ofstream f(tmp, std::ios::trunc);
+                if (f) {
+                    f << "{\"battery\": " << battery
+                      << ", \"voltage\": " << vbuf
+                      << ", \"temp\": " << temp << "}";
+                    ok = f.good();
+                }
+            }
+            if (ok && std::rename(tmp.c_str(), config::TELEMETRY_FILE.c_str()) == 0) {
+                last_batt_written_ = static_cast<int>(battery);
+            }
+        }
+
         // Auto fan (thermal): edge-triggered on the temperature threshold — one
         // FAN_ON when crossing above, one FAN_OFF when crossing back, so the
         // cyclic report never spams fan commands.
@@ -128,17 +152,24 @@ void SerialProtocol::parse_buffer(const unsigned char* data, std::size_t len) {
         }
 
         // Shutdown triggers (spec 5.2), checked on every frame (not throttled):
-        //   - Power_off > 0       : board explicitly requests shutdown
-        //   - battery < BAT_LOW   : low battery (<10%)
-        // Either enters the shutdown flow and sends ALLOW_SHUTDOWN. Latched so
-        // the cyclic report does not re-trigger it on every frame.
+        //   - Power_off > 0     : board explicitly requests shutdown → ALLOW_SHUTDOWN once
+        //   - battery < BAT_LOW : low battery (<10%) → ALLOW_SHUTDOWN 3× (a dropped frame
+        //                         must not leave the board powered on low battery)
+        // Either enters the shutdown flow. Latched so the cyclic report does not re-trigger.
         if (!shutdown_triggered_ &&
             (power_off > 0 || battery < config::BAT_LOW)) {
             shutdown_triggered_ = true;
+            const bool low_batt = (battery < config::BAT_LOW);
             const char* reason = (power_off > 0) ? "Power_off>0" : "电量不足(<10%)";
             log::info(std::string("[串口] 触发关机流程 (") + reason + ")");
-            log::info("[串口] 发送：允许关机");
-            send(config::ALLOW_SHUTDOWN);
+            const int retries = low_batt ? config::ALLOW_SHUTDOWN_RETRIES : 1;
+            for (int i = 0; i < retries; ++i) {
+                log::info(std::string("[串口] 发送：允许关机 (") +
+                          std::to_string(i + 1) + "/" + std::to_string(retries) + ")");
+                send(config::ALLOW_SHUTDOWN);
+                if (i + 1 < retries)
+                    std::this_thread::sleep_for(std::chrono::seconds(config::ALLOW_SHUTDOWN_RETRY_SEC));
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(config::ALLOW_SHUTDOWN_DELAY_MS));
             if (on_shutdown_) on_shutdown_();
         }

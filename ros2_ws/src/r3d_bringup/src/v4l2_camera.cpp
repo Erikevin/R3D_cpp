@@ -90,11 +90,16 @@ bool V4L2Camera::open() {
   xioctl(fd_, VIDIOC_S_PARM, &parm);  // 失败不致命
 
   // 控制：自动曝光 / 自动白平衡 / JPEG 质量
+  // true→自动；false→显式切手动（原实现 false 时什么都不做，等于关不掉自动）
   if (cfg_.auto_exposure) {
     set_control(V4L2_CID_EXPOSURE_AUTO, V4L2_EXPOSURE_APERTURE_PRIORITY);
+  } else {
+    set_control(V4L2_CID_EXPOSURE_AUTO, V4L2_EXPOSURE_MANUAL);  // 驱动保留上次曝光值
   }
   if (cfg_.auto_wb) {
     set_control(V4L2_CID_AUTO_WHITE_BALANCE, 1);
+  } else {
+    set_control(V4L2_CID_AUTO_WHITE_BALANCE, 0);  // 驱动保留上次白平衡值
   }
   if (cfg_.jpeg_quality > 0) {
     set_control(V4L2_CID_JPEG_COMPRESSION_QUALITY, cfg_.jpeg_quality);

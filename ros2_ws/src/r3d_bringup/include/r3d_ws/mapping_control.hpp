@@ -84,6 +84,8 @@ class MappingControl {
     std::string lio_sam;
     std::string camera;
     std::string data_dir;
+    bool auto_exposure = true;  // JSON "auto_exposure"（默认 true），注入 camera 参数
+    bool auto_wb = true;        // JSON "auto_wb"（默认 true），注入 camera 参数
   };
   // Reads $R3D_MAPPING_CMD_FILE (else MAPPING_CMD_FILE_DEFAULT rel. to cwd); on
   // any error the affected field — or all fields — falls back to the built-in

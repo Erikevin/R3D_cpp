@@ -69,6 +69,8 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
   this->declare_parameter<int>("fps", 10);        // 相机硬件抓图帧率（V4L2 driver）
   this->declare_parameter<int>("save_fps", 5);    // 保存到磁盘的帧率（抽帧）
   this->declare_parameter<int>("jpeg_quality", 90);
+  this->declare_parameter<bool>("auto_exposure", true);  // V4L2 自动曝光开关
+  this->declare_parameter<bool>("auto_wb", true);        // V4L2 自动白平衡开关
   this->declare_parameter<int>("max_pending", 16);
   this->declare_parameter<bool>("record_bag", true);
   this->declare_parameter<std::string>("bag_topics", "/livox/imu /livox/lidar");
@@ -82,12 +84,14 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
   cam_fps_ = this->get_parameter("fps").as_int();
   save_fps_ = this->get_parameter("save_fps").as_int();
   const int q = this->get_parameter("jpeg_quality").as_int();
+  const bool ae = this->get_parameter("auto_exposure").as_bool();
+  const bool awb = this->get_parameter("auto_wb").as_bool();
   max_pending_ = static_cast<std::size_t>(this->get_parameter("max_pending").as_int());
   record_bag_ = this->get_parameter("record_bag").as_bool();
   bag_topics_ = this->get_parameter("bag_topics").as_string();
 
-  cam0_cfg_ = CamConfig{dev0, w, h, cam_fps_, true, true, q};
-  cam2_cfg_ = CamConfig{dev2, w, h, cam_fps_, true, true, q};
+  cam0_cfg_ = CamConfig{dev0, w, h, cam_fps_, ae, awb, q};
+  cam2_cfg_ = CamConfig{dev2, w, h, cam_fps_, ae, awb, q};
 
   // ---- 输出目录 ----
   // output_dir_ 作为存储根目录：默认 ~/Desktop/save_pcd，或由外部 output_dir 参数指定

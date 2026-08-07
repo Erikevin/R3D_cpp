@@ -23,7 +23,7 @@ struct CamConfig {
   int width = 2592;
   int height = 1944;
   int fps = 10;
-  bool auto_exposure = true;   // V4L2_CID_EXPOSURE_AUTO = APERTURE_PRIORITY
+  bool auto_exposure = false;   // V4L2_CID_EXPOSURE_AUTO = APERTURE_PRIORITY
   bool auto_wb = true;         // V4L2_CID_AUTO_WHITE_BALANCE = 1
   int jpeg_quality = 90;       // V4L2_CID_JPEG_COMPRESSION_QUALITY（驱动支持则生效）
 };

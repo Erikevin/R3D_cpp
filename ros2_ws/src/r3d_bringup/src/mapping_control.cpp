@@ -324,7 +324,8 @@ MappingControl::LoadedCommands MappingControl::load_commands_from_file() {
       "source ros2_ws/install/setup.bash && "
       "exec ros2 run r3d_bringup image_odom_recorder";
 
-  LoadedCommands out{kDefLivox, kDefLioSam, kDefCamera, ""};  // data_dir 默认空=用节点默认
+  LoadedCommands out{kDefLivox, kDefLioSam, kDefCamera, "", true, true};
+  // data_dir 默认空=用节点默认；auto_exposure/auto_wb 默认 true（与节点原硬编码一致）
 
   // 1) 解析路径：优先 $R3D_MAPPING_CMD_FILE，否则默认相对 cwd 路径。
   const char* env = std::getenv(config::MAPPING_CMD_FILE_ENV);
@@ -382,6 +383,15 @@ MappingControl::LoadedCommands MappingControl::load_commands_from_file() {
     out.data_dir = j.at("data_dir").get<std::string>();
   }
 
+  // auto_exposure / auto_wb：可选 bool 配置（默认 true）。缺失或类型不符时静默用默认，
+  // 与 data_dir 同属可选项，不告警。启动 camera 时注入 -p auto_exposure / -p auto_wb。
+  if (j.contains("auto_exposure") && j.at("auto_exposure").is_boolean()) {
+    out.auto_exposure = j.at("auto_exposure").get<bool>();
+  }
+  if (j.contains("auto_wb") && j.at("auto_wb").is_boolean()) {
+    out.auto_wb = j.at("auto_wb").get<bool>();
+  }
+
   log::info(std::string("已加载建图命令配置: ") + path);
   return out;
 }
@@ -411,6 +421,16 @@ void MappingControl::start_mapping_commands() {
       cam_cmd += " -p output_dir:='" + cmds_.data_dir + "'";
       log::info(std::string("[mapping] 数据存储根目录: ") + cmds_.data_dir + "/<时间戳>");
     }
+    // 相机自动曝光/白平衡开关注入（ROS 参数为 bool，:=true / :=false 直接生效）。
+    // 注意：两个 const char* 字面量之间无 operator+，须分别 += 拼到 std::string（不像
+    // data_dir 那行有 std::string 操作数可触发 string::operator+）。
+    cam_cmd += " -p auto_exposure:=";
+    cam_cmd += cmds_.auto_exposure ? "true" : "false";
+    cam_cmd += " -p auto_wb:=";
+    cam_cmd += cmds_.auto_wb ? "true" : "false";
+    log::info(std::string("[mapping] 相机 auto_exposure=") +
+              (cmds_.auto_exposure ? "true" : "false") +
+              " auto_wb=" + (cmds_.auto_wb ? "true" : "false"));
     if (pid_t pid = launch_background(cam_cmd, "camera"); pid > 0) {
       std::lock_guard<std::mutex> lk(m_);
       camera_pid_ = pid;

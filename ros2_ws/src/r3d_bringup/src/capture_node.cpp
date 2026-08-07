@@ -73,6 +73,7 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
   this->declare_parameter<bool>("auto_wb", true);        // V4L2 自动白平衡开关
   this->declare_parameter<int>("max_pending", 16);
   this->declare_parameter<bool>("record_bag", true);
+  this->declare_parameter<bool>("save_odom", true);  // 是否落盘 odom.txt（false 时仅录 bag）
   this->declare_parameter<std::string>("bag_topics", "/livox/imu /livox/lidar");
 
   odom_topic_ = this->get_parameter("odom_topic").as_string();
@@ -88,6 +89,7 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
   const bool awb = this->get_parameter("auto_wb").as_bool();
   max_pending_ = static_cast<std::size_t>(this->get_parameter("max_pending").as_int());
   record_bag_ = this->get_parameter("record_bag").as_bool();
+  const bool save_odom = this->get_parameter("save_odom").as_bool();
   bag_topics_ = this->get_parameter("bag_topics").as_string();
 
   cam0_cfg_ = CamConfig{dev0, w, h, cam_fps_, ae, awb, q};
@@ -132,9 +134,15 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
   cam2_->set_logger(cam_warn);
 
   // ---- Odometry ----
-  const std::string odom_path = output_dir_ + "/odom.txt";
-  odom_ = std::make_unique<OdomWriter>(this, odom_topic_, odom_path);
-  odom_->start();
+  // save_odom=false 时跳过 odom.txt 落盘（仅录 bag），减少不必要的 IO。
+  std::string odom_path;  // save_odom=false 时保持空
+  if (save_odom) {
+    odom_path = output_dir_ + "/odom.txt";
+    odom_ = std::make_unique<OdomWriter>(this, odom_topic_, odom_path);
+    odom_->start();
+  } else {
+    RCLCPP_INFO(this->get_logger(), "📝 odom.txt 落盘已关闭 (save_odom=false)");
+  }
 
   // ---- Livox 时间戳共享内存（保留映射备用；trigger 已改用系统时间戳，不再依赖）----
   if (ts_reader_.open()) {
@@ -161,7 +169,9 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
               cam_fps_, save_fps_);
   RCLCPP_INFO(this->get_logger(), "📷 camera0: %s → %s", dev0.c_str(), img_dir0_.c_str());
   RCLCPP_INFO(this->get_logger(), "📷 camera1: %s → %s", dev2.c_str(), img_dir1_.c_str());
-  RCLCPP_INFO(this->get_logger(), "📝 odom: %s → %s", odom_topic_.c_str(), odom_path.c_str());
+  if (save_odom) {
+    RCLCPP_INFO(this->get_logger(), "📝 odom: %s → %s", odom_topic_.c_str(), odom_path.c_str());
+  }
 }
 
 CaptureNode::~CaptureNode() {

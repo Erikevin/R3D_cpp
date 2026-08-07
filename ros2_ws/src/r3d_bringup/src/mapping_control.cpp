@@ -324,7 +324,7 @@ MappingControl::LoadedCommands MappingControl::load_commands_from_file() {
       "source ros2_ws/install/setup.bash && "
       "exec ros2 run r3d_bringup image_odom_recorder";
 
-  LoadedCommands out{kDefLivox, kDefLioSam, kDefCamera, "", true, true};
+  LoadedCommands out{kDefLivox, kDefLioSam, kDefCamera, "", true, true, true};
   // data_dir 默认空=用节点默认；auto_exposure/auto_wb 默认 true（与节点原硬编码一致）
 
   // 1) 解析路径：优先 $R3D_MAPPING_CMD_FILE，否则默认相对 cwd 路径。
@@ -392,12 +392,24 @@ MappingControl::LoadedCommands MappingControl::load_commands_from_file() {
     out.auto_wb = j.at("auto_wb").get<bool>();
   }
 
+  // save_odom：可选 bool（默认 true）。false 时节点不写 odom.txt（仅录 bag/图片）。
+  // 缺失或类型不符静默用默认，与 data_dir/auto_exposure/auto_wb 同属可选项，不告警。
+  if (j.contains("save_odom") && j.at("save_odom").is_boolean()) {
+    out.save_odom = j.at("save_odom").get<bool>();
+  }
+
   log::info(std::string("已加载建图命令配置: ") + path);
   return out;
 }
 
 void MappingControl::start_mapping_commands() {
   try {
+    // 启动 Livox 前先清理可能残留的 livox_ros_driver2 实例，避免多实例争抢 MID360 设备/UDP 端口
+    // （上次异常退出/崩溃遗留的孤儿会让新驱动启动失败或数据错乱）。
+    if (run_pk("livox_ros_driver2", SIGKILL, true)) {
+      log::warn("[mapping] 检测到残留 livox_ros_driver2 实例，已 SIGKILL 清理，等待设备释放");
+      std::this_thread::sleep_for(std::chrono::seconds(1));  // 等 MID360 设备/UDP 端口释放
+    }
     log::info("🔹 启动 Livox 驱动");
     if (pid_t pid = launch_background(cmds_.livox, "livox"); pid > 0) {
       std::lock_guard<std::mutex> lk(m_);
@@ -428,9 +440,12 @@ void MappingControl::start_mapping_commands() {
     cam_cmd += cmds_.auto_exposure ? "true" : "false";
     cam_cmd += " -p auto_wb:=";
     cam_cmd += cmds_.auto_wb ? "true" : "false";
+    cam_cmd += " -p save_odom:=";
+    cam_cmd += cmds_.save_odom ? "true" : "false";
     log::info(std::string("[mapping] 相机 auto_exposure=") +
               (cmds_.auto_exposure ? "true" : "false") +
-              " auto_wb=" + (cmds_.auto_wb ? "true" : "false"));
+              " auto_wb=" + (cmds_.auto_wb ? "true" : "false") +
+              " save_odom=" + (cmds_.save_odom ? "true" : "false"));
     if (pid_t pid = launch_background(cam_cmd, "camera"); pid > 0) {
       std::lock_guard<std::mutex> lk(m_);
       camera_pid_ = pid;

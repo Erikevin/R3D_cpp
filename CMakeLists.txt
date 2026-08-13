@@ -23,6 +23,8 @@ add_library(r3d_core STATIC
     src/serial.cpp
     src/serial_protocol.cpp
     src/protection.cpp
+    src/log_rotator.cpp
+    src/performance_monitor.cpp
     src/ipc.cpp
     src/system.cpp
     src/bridge_launcher.cpp

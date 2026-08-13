@@ -61,14 +61,14 @@ sleep 0.5
 
 # ---- 4) 启动 bridge（强制推流） ----
 echo "[run_demo] 启动 r3d_ws_bridge (R3D_FORCE_STREAM=1)..."
-R3D_FORCE_STREAM=1 "$BIN/r3d_ws_bridge" > /tmp/r3d_bridge.log 2>&1 &
+R3D_FORCE_STREAM=1 "$BIN/r3d_ws_bridge" >> /tmp/r3d_bridge.log 2>&1 &
 BRIDGE_PID=$!
 
-# ---- 5) 等待 WS 端口绑定 ----
+# ---- 5) 等待 WS 端口绑定（探测 8765 监听，不依赖日志内容 → append 友好）----
 echo "[run_demo] 等待 WS 服务就绪..."
 ok=0
 for _ in $(seq 1 50); do
-  if grep -q "ws://0.0.0.0:8765" /tmp/r3d_bridge.log 2>/dev/null; then ok=1; break; fi
+  if (exec 3<>"/dev/tcp/127.0.0.1/8765") 2>/dev/null; then exec 3>&- 3<&-; ok=1; break; fi
   sleep 0.1
 done
 if [ "$ok" = 0 ]; then

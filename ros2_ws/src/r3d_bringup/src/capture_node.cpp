@@ -67,7 +67,7 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
   this->declare_parameter<int>("image_width", 2592);
   this->declare_parameter<int>("image_height", 1944);
   this->declare_parameter<int>("fps", 10);        // 相机硬件抓图帧率（V4L2 driver）
-  this->declare_parameter<int>("save_fps", 5);    // 保存到磁盘的帧率（抽帧）
+  this->declare_parameter<int>("save_fps", 5);    // 目标保存帧率(Hz)；计数抽帧周期=cam_fps/save_fps
   this->declare_parameter<int>("jpeg_quality", 90);
   this->declare_parameter<bool>("auto_exposure", true);  // V4L2 自动曝光开关
   this->declare_parameter<bool>("auto_wb", true);        // V4L2 自动白平衡开关
@@ -157,16 +157,17 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
     RCLCPP_INFO(this->get_logger(), "📦 bag 录制已关闭 (record_bag=false)");
   }
 
-  // ---- 线程：IO/相机 worker 先就位，trigger 最后派发 tick ----
+  // ---- 线程：IO worker + 双相机事件驱动采集（各自 grab 等帧到达 + 曝光门限抽帧）----
   running_ = true;
   io_th_ = std::thread([this] { io_loop(); });
   cap0_th_ = std::thread([this] { capture_loop(*cam0_, img_dir0_, "camera0"); });
   cap2_th_ = std::thread([this] { capture_loop(*cam2_, img_dir1_, "camera1"); });
-  trig_th_ = std::thread([this] { trigger_loop(); });
 
+  const int save_period =
+      (save_fps_ > 0 && save_fps_ <= cam_fps_) ? (cam_fps_ / save_fps_) : 1;
   RCLCPP_INFO(this->get_logger(),
-              "✅ 双摄像头启动成功 | 硬件抓图: %dHz → 保存: %dHz (grab 排空取最新, 抽帧保存)",
-              cam_fps_, save_fps_);
+              "✅ 双摄像头启动成功 | 事件驱动采集: 硬件 %dHz，计数抽帧保存 %dHz（每 %d 帧存 1）",
+              cam_fps_, save_fps_, save_period);
   RCLCPP_INFO(this->get_logger(), "📷 camera0: %s → %s", dev0.c_str(), img_dir0_.c_str());
   RCLCPP_INFO(this->get_logger(), "📷 camera1: %s → %s", dev2.c_str(), img_dir1_.c_str());
   if (save_odom) {
@@ -176,12 +177,10 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
 
 CaptureNode::~CaptureNode() {
   running_ = false;
-  // 唤醒所有阻塞在条件变量上的线程
-  trig_.cv.notify_all();
+  // 唤醒所有阻塞在条件变量上的线程：IO 落盘线程、ts2 握手中等待第二路的第一路采集线程。
+  // 其余采集线程阻塞在 grab() 的 poll()，running_=false 后最多 ~poll timeout(1s) 内自行退出。
   io_cv_.notify_all();
-  if (trig_th_.joinable()) {
-    trig_th_.join();
-  }
+  tshare_.cv.notify_all();
   if (cap0_th_.joinable()) {
     cap0_th_.join();
   }
@@ -231,82 +230,75 @@ void CaptureNode::enqueue_save(const std::string &path, std::vector<uint8_t> dat
   io_cv_.notify_one();
 }
 
-void CaptureNode::trigger_loop() {
-  RCLCPP_INFO(this->get_logger(), "⌚ 基于系统时间戳触发双相机，间隔 %.3fs (%dHz)...",
-              1.0 / static_cast<double>(save_fps_), save_fps_);
-  const double min_interval = 1.0 / static_cast<double>(save_fps_);
-  auto last_fire = std::chrono::steady_clock::now();
-  std::size_t fire_count = 0;
-
-  while (running_) {
-    const auto now = std::chrono::steady_clock::now();
-    const double elapsed = std::chrono::duration<double>(now - last_fire).count();
-
-    // 触发源：系统时间戳。steady_clock 测量间隔，达到 min_interval 即触发；
-    // tick 戳取 system_clock 的 wall-clock 纳秒，写入 trig_.ns 供文件名与时间轴对齐。
-    if (elapsed >= min_interval) {
-      last_fire = now;
-      const int64_t sys_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                 std::chrono::system_clock::now().time_since_epoch())
-                                 .count();
-      // 取 timeshare 第二个 timestamp(系统UTC)的纳秒,与 tick 一起下发给两路相机 → 同名配对
-      const int64_t ts2_ns = ts_reader_.get_sys_ns();
-      {
-        std::lock_guard<std::mutex> lk(trig_.mtx);
-        trig_.ns = sys_ns;
-        trig_.sys_ns = ts2_ns;
-        ++trig_.gen;
-      }
-      trig_.cv.notify_all();  // 唤醒两路相机线程
-      if (++fire_count % 10 == 0) {
-        RCLCPP_INFO(this->get_logger(), "✅ 已触发 %zu 个 tick | %dHz", fire_count, save_fps_);
-      }
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-  RCLCPP_INFO(this->get_logger(), "⌚ trigger 线程退出，共触发 %zu 个 tick", fire_count);
-}
-
 void CaptureNode::capture_loop(V4L2Camera &cam, const std::string &img_dir,
                                const char *label) {
-  RCLCPP_INFO(this->get_logger(), "⌚ [%s] 采集线程启动，等待雷达时间戳触发", label);
-  uint64_t gen_seen = 0;
+  // 计数抽帧：save_fps_ 为目标保存帧率(Hz)，周期 period = cam_fps_/save_fps_（每 period 帧存 1）。
+  // save_fps_<=0 或 >cam_fps_ 时退化为全帧率保存（period=1，并规避除零）。
+  const int period = (save_fps_ > 0 && save_fps_ <= cam_fps_) ? (cam_fps_ / save_fps_) : 1;
+  RCLCPP_INFO(this->get_logger(),
+              "⌚ [%s] 事件驱动采集线程启动：grab 等帧到达 + 计数抽帧 %dHz（每 %d 帧存 1）", label,
+              save_fps_, period);
+  uint64_t frame_idx = 0;  // 本路相机已到达帧计数（含被抽帧丢弃的帧）
   std::size_t save_count = 0;
 
-  while (running_) {
-    // 等待下一个雷达 tick（同一 tick 唤醒两路 → 同名对齐）
-    int64_t ts2_ns = 0;
-    {
-      std::unique_lock<std::mutex> lk(trig_.mtx);
-      trig_.cv.wait(lk, [this, &gen_seen] {
-        return !running_ || trig_.gen != gen_seen;
-      });
-      if (!running_) {
-        break;
-      }
-      gen_seen = trig_.gen;
-      ts2_ns = trig_.sys_ns;
-    }
+  // 首次步调对齐：等两路采集线程都就绪，再同步开始 grab 计数。两路 UVC 独立启动、
+  // 第一帧曝光时刻可能相差很大；若不对齐，后续 period 计数抽帧配对的两路帧会严重错位
+  // （ts2 同名但 frame_ns 差大）。对齐后两路 frame_idx 步调一致，配对帧曝光时刻仅差
+  // 两路曝光边沿（毫秒级）。此后每次保存点的握手仅为共享同一真实 timeshare，两路几乎
+  // 同时到达 → 等待可忽略。
+  {
+    std::unique_lock<std::mutex> lk(tshare_.mtx);
+    ++tshare_.started;
+    tshare_.cv.wait(lk, [&] { return tshare_.started >= 2 || !running_; });
+  }
+  tshare_.cv.notify_all();
+  RCLCPP_INFO(this->get_logger(), "⌚ [%s] 两路已同步起步，开始计数抽帧", label);
 
+  while (running_) {
     std::vector<uint8_t> buf;
     int64_t frame_ns = 0;
-    if (cam.grab(buf, &frame_ns)) {
-      // 文件名第一段 = 驱动曝光时刻(v4l2_buffer.timestamp, 各相机独立)；
-      // 第二段 = trigger tick 的 timeshare 系统UTC(左右同 tick 同值 → 同名配对)
-      char name[64];
-      std::snprintf(name, sizeof(name), "%lld_%lld.jpg",
-                    static_cast<long long>(frame_ns), static_cast<long long>(ts2_ns));
-      const std::string path = img_dir + "/" + name;
-      enqueue_save(path, std::move(buf), label);
-      if (++save_count % 10 == 0) {
-        std::size_t cur_dropped = 0;
-        {
-          std::lock_guard<std::mutex> lk(io_mtx_);
-          cur_dropped = dropped_;
-        }
-        RCLCPP_INFO(this->get_logger(), "[%s] 已保存: %zu 帧 | 全局丢弃: %zu", label, save_count,
-                    cur_dropped);
+    // grab() 内部 poll() 阻塞等帧到达（USB 帧完成中断在用户态的投射），排空取最新帧；
+    // 返回 false = 错误帧 / 超时 → 继续等下一帧（poll 会阻塞，非忙等）。
+    if (!cam.grab(buf, &frame_ns)) {
+      continue;
+    }
+    // 计数抽帧：仅每 period 帧保存一次，帧间均匀分布，不依赖时间戳时基/抖动。
+    if (++frame_idx % period != 0) {
+      continue;
+    }
+
+    // 左右 ts2 同名握手：两路各自事件驱动抽帧，保存时刻不同 → 原始 ts2 不同。第一路到达
+    // 保存点读 timeshare 写入共享，第二路到达用同一值 → 两路第二段严格相同（真实
+    // timeshare，未量化）。第一路等第二路推进 gen（等待 ≈ 两路曝光边沿差，毫秒级）。
+    int64_t shared_ts2;
+    {
+      std::unique_lock<std::mutex> lk(tshare_.mtx);
+      ++tshare_.hits;
+      if (tshare_.hits == 1) {
+        tshare_.ts2_ns = ts_reader_.get_sys_ns();
+        const uint64_t g0 = tshare_.gen;
+        tshare_.cv.wait(lk, [&] { return tshare_.gen != g0 || !running_; });
+      } else {  // hits == 2
+        ++tshare_.gen;
+        tshare_.hits = 0;
       }
+      shared_ts2 = tshare_.ts2_ns;
+    }
+    tshare_.cv.notify_all();
+
+    // 文件名第一段 = 驱动曝光时刻(各相机独立)；第二段 = 两路共享的真实 timeshare UTC（同名配对）
+    char name[64];
+    std::snprintf(name, sizeof(name), "%lld_%lld.jpg",
+                  static_cast<long long>(frame_ns), static_cast<long long>(shared_ts2));
+    enqueue_save(img_dir + "/" + name, std::move(buf), label);
+    if (++save_count % 10 == 0) {
+      std::size_t cur_dropped = 0;
+      {
+        std::lock_guard<std::mutex> lk(io_mtx_);
+        cur_dropped = dropped_;
+      }
+      RCLCPP_INFO(this->get_logger(), "[%s] 已保存: %zu 帧 | 全局丢弃: %zu", label, save_count,
+                  cur_dropped);
     }
   }
   RCLCPP_INFO(this->get_logger(), "[%s] 采集线程退出，共保存 %zu 帧", label, save_count);

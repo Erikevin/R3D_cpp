@@ -2,14 +2,13 @@
 
 // 主节点：双相机 V4L2 原生 MJPG 高效保存 + 独立采集线程 + Odometry 记录。
 //
-// 时序对齐（移植自 camera_two_value.py，触发源已改为系统时间戳）：
-//   trigger_loop 作为“主时钟”以 steady_clock 测量间隔，距上次触发 >= 1/fps 时，
-//   取 system_clock 的 wall-clock 纳秒写入 trig_.ns 并 ++trig_.gen、notify_all()。
-//
-// 每个相机独立的 capture 线程：
-//   在 trig_.cv 上等待同一个 tick，被唤醒后 grab() 最新帧（排空 + 丢弃 ERROR/标记异常帧），
-//   以驱动曝光时刻(v4l2_buffer.timestamp) 与 tick 的 timeshare UTC 组合作文件名、推入共享 IO 队列。
-//   两路相机并发抓取、互不阻塞；文件名第二段时间戳同源 → 左右同名配对，共享同一时间轴。
+// 采集模型（纯事件驱动）：
+//   每个相机独立的 capture 线程死循环调用 grab()，grab() 内部 poll() 阻塞等“帧到达”
+//   （USB 帧完成中断在用户态的投射），排空取最新帧；再以驱动曝光时刻(v4l2_buffer.timestamp)
+//   做计数抽帧——save_fps 为目标保存帧率(Hz)，每 cam_fps/save_fps 帧保存 1 帧，
+//   帧间均匀分布且不依赖时间戳时基；“曝光→取走”延迟约一次 USB 传输+DQBUF（毫秒级）。
+//   文件名第一段 = 驱动曝光时刻（各相机独立）；第二段 = timeshare 系统 UTC，经两路在保存点
+//   握手共享同一值（第一路读、第二路用）→ 左右第二段严格相同，同名配对。
 //
 // io_loop（落盘线程）：
 //   消费 IO 队列，把 MJPG 字节直接 write 到磁盘（零编码）。有界队列 + 背压丢老帧。
@@ -47,7 +46,7 @@ public:
   CaptureNode &operator=(const CaptureNode &) = delete;
 
 private:
-  void trigger_loop();
+  // 事件驱动采集循环：死循环 grab() 等帧到达，按曝光时刻门限抽帧落盘。
   void capture_loop(V4L2Camera &cam, const std::string &img_dir, const char *label);
   void io_loop();
   // 入共享 IO 队列 + 背压（超 max_pending_ 丢老帧）。两路相机复用。
@@ -65,7 +64,7 @@ private:
   CamConfig cam0_cfg_;
   CamConfig cam2_cfg_;
   int cam_fps_ = 10;    // V4L2 硬件抓图帧率（cfg_.fps）
-  int save_fps_ = 2;    // 保存到磁盘的帧率（trigger 触发频率；grab 排空取最新 → 对硬件流抽帧）
+  int save_fps_ = 2;    // 目标保存帧率(Hz)；计数抽帧周期 = cam_fps_/save_fps_（每 period 帧存 1）
   std::size_t max_pending_ = 16;
   bool record_bag_ = true;
   std::string bag_topics_;
@@ -76,20 +75,20 @@ private:
   std::unique_ptr<OdomWriter> odom_;
   TsReader ts_reader_;
 
-  // ---- 雷达 tick 共享触发状态 ----
-  struct TriggerState {
-    std::mutex mtx;
-    std::condition_variable cv;
-    int64_t ns = 0;       // 当前 tick 的系统 wall-clock 纳秒戳
-    int64_t sys_ns = 0;   // 当前 tick 时刻 timeshare 第二个 timestamp(系统UTC) 的纳秒
-    uint64_t gen = 0;     // 单调递增，每新 tick +1
-  } trig_;
-
   // ---- 线程 ----
   std::atomic<bool> running_{false};
-  std::thread trig_th_;
   std::thread cap0_th_;
   std::thread cap2_th_;
+
+  // ---- 左右 ts2 同名握手（两路事件驱动保存时刻不同，靠此共享同一真实 timeshare UTC）----
+  struct TsShare {
+    std::mutex mtx;
+    std::condition_variable cv;
+    int64_t ts2_ns = 0;    // 本配对周期共享的 timeshare UTC（第一路读、第二路用）
+    uint64_t gen = 0;      // 配对周期世代，第二路到达时推进
+    int hits = 0;          // 本 gen 内已到达保存点的路数（1 或 2）
+    int started = 0;       // 首次步调对齐：已就绪的采集线程数（1 或 2）
+  } tshare_;
 
   // ---- bag 子进程句柄 ----
   std::string bag_uri_;

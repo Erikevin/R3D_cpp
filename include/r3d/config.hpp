@@ -4,6 +4,7 @@
 // Constants are grouped by function — source files reference config::XXX rather
 // than hardcoding magic numbers.
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -97,7 +98,18 @@ inline constexpr const char* ROS_WS_DEFAULT = "/root/R3D_cpp/ros2_ws";
 inline constexpr const char* ROS_SETUP      = "/opt/ros/humble/setup.bash";
 inline constexpr const char* BRIDGE_PACKAGE = "r3d_bringup";
 inline constexpr const char* BRIDGE_NODE    = "r3d_ws_bridge";
-inline constexpr const char* BRIDGE_LOG     = "/tmp/r3d_bridge.log";  // headless-mode stdout/stderr
+inline constexpr const char* BRIDGE_LOG     = "/var/log/r3d_bringup.log";  // 桥 stdout/stderr（持久+轮转）
+
+// ---- Logging (persistent, truncate on stale/oversize) ----------------------
+// 桥日志（BRIDGE_LOG）与性能日志落盘 /var/log，掉电保留。桥进程经 dup2 持有固定 fd 写
+// BRIDGE_LOG，无法按天换文件；故由 PerformanceMonitor 后台线程周期检查两份日志：mtime
+// 早于 LOG_KEEP_DAYS（两天前的）或大小超 LOG_ROTATE_BYTES 时直接 truncate 清空（零拷贝、
+// 不归档），O_APPEND 下次写自动追加，安全。性能日志每 LOG_SAMPLE_INTERVAL_MS 写一次。
+inline constexpr const char* PERF_LOG_PATH          = "/var/log/performance.log";
+inline constexpr int         LOG_SAMPLE_INTERVAL_MS = 3000;              // 性能采样周期(ms)
+inline constexpr std::size_t LOG_ROTATE_BYTES       = 20 * 1024 * 1024;  // 单文件上限，超则清空
+inline constexpr int         LOG_KEEP_DAYS          = 2;                 // mtime 早于 N 天则清空
+inline constexpr const char* PERF_DISK_DEV          = "";                // 空=自动探测根设备
 
 // ---- System state ----------------------------------------------------------
 enum class State {

@@ -11,6 +11,7 @@
 #include "r3d/config.hpp"
 #include "r3d/ipc.hpp"
 #include "r3d/logger.hpp"
+#include "r3d/performance_monitor.hpp"
 #include "r3d/system.hpp"
 
 namespace r3d {
@@ -69,6 +70,11 @@ int main() {
 
     std::thread ipc_thread([&system] { monitor_shared_cmd(system); });
 
+    // 性能监控：周期采样 CPU/内存/swap/磁盘 IO 写 /var/log/performance.log，并顺带
+    // 轮转桥日志 /var/log/r3d_bringup.log（近 LOG_KEEP_DAYS 天）。独立于 System 状态机。
+    r3d::PerformanceMonitor perf;
+    perf.start();
+
     int rc = 0;
     try {
         rc = system.start_main_flow();
@@ -82,6 +88,7 @@ int main() {
     system.hw().exit_clean();
     system.serial().close();
     if (ipc_thread.joinable()) ipc_thread.join();
+    perf.stop();
     // 桥死 → rc 非零 → systemd on-failure 重启（重启时先杀 8765 占用者再拉桥）；
     // 正常 SIGINT/SIGTERM 停止 → rc=0 不重启。
     return rc;

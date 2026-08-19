@@ -7,8 +7,9 @@
 //   （USB 帧完成中断在用户态的投射），排空取最新帧；再以驱动曝光时刻(v4l2_buffer.timestamp)
 //   做计数抽帧——save_fps 为目标保存帧率(Hz)，每 cam_fps/save_fps 帧保存 1 帧，
 //   帧间均匀分布且不依赖时间戳时基；“曝光→取走”延迟约一次 USB 传输+DQBUF（毫秒级）。
-//   文件名第一段 = 驱动曝光时刻（各相机独立）；第二段 = timeshare 系统 UTC，经两路在保存点
-//   握手共享同一值（第一路读、第二路用）→ 左右第二段严格相同，同名配对。
+//   文件名 = <墙钟微秒>_<timeshare UTC纳秒>：第一段 = 驱动曝光时刻转墙钟总微秒（各
+//   相机独立）；第二段 = 帧到达时刻（grab 返回即采样）读 timeshare 第二个时间戳，
+//   绑定本帧、无跨相机握手等待（左右第二段差毫秒级）。
 //
 // io_loop（落盘线程）：
 //   消费 IO 队列，把 MJPG 字节直接 write 到磁盘（零编码）。有界队列 + 背压丢老帧。
@@ -68,27 +69,26 @@ private:
   std::size_t max_pending_ = 16;
   bool record_bag_ = true;
   std::string bag_topics_;
+  int bag_max_cache_mb_ = 256;  // --max-cache-size（MB）；0=用 rosbag2 默认 100MiB
+  int bag_max_file_mb_ = 2000;  // 单文件分包上限（MB）；0=不分包
 
   // ---- 组件 ----
   std::unique_ptr<V4L2Camera> cam0_;
   std::unique_ptr<V4L2Camera> cam2_;
   std::unique_ptr<OdomWriter> odom_;
-  TsReader ts_reader_;
+  TsReader ts_reader_;  // 读 timeshare 第二个时间戳（系统 UTC ns）作文件名第二列
 
   // ---- 线程 ----
   std::atomic<bool> running_{false};
   std::thread cap0_th_;
   std::thread cap2_th_;
 
-  // ---- 左右 ts2 同名握手（两路事件驱动保存时刻不同，靠此共享同一真实 timeshare UTC）----
-  struct TsShare {
+  // ---- 首次步调对齐栅栏：等两路采集线程都就绪，再同步开始 grab 计数 ----
+  struct StartGate {
     std::mutex mtx;
     std::condition_variable cv;
-    int64_t ts2_ns = 0;    // 本配对周期共享的 timeshare UTC（第一路读、第二路用）
-    uint64_t gen = 0;      // 配对周期世代，第二路到达时推进
-    int hits = 0;          // 本 gen 内已到达保存点的路数（1 或 2）
-    int started = 0;       // 首次步调对齐：已就绪的采集线程数（1 或 2）
-  } tshare_;
+    int started = 0;  // 已就绪的采集线程数（1 或 2）
+  } start_gate_;
 
   // ---- bag 子进程句柄 ----
   std::string bag_uri_;

@@ -147,8 +147,8 @@ R3_CARDS = [
     ], R3),
     ("image_odom_recorder", "录制存档", [
         "订阅 /lio_sam/mapping/odometry → odom.txt",
-        "读 ~/timeshare 雷达时戳作主时钟",
-        "触发双相机 → images/cam0|1/<ns>.jpg",
+        "双相机事件驱动抓帧，曝光时刻转墙钟µs命名",
+        "触发双相机 → images/camera{0,1}/<墙钟微秒>_<timeshare UTC纳秒>.jpg",
         "fork ros2 bag record 录 /livox/imu /livox/lidar",
         "→ rosbag2/",
     ], R3),
@@ -212,9 +212,9 @@ FLOWS = [
         "手机 Three.js 渲染点云 + 位姿轨迹",
     ]),
     (FILE, "3", "离线存档流（建图产物）", [
-        "recorder 读 ~/timeshare 雷达时戳作主时钟",
-        "同一时戳触发双相机抓帧",
-        "  → images/cam0|1/<ns>.jpg",
+        "recorder 双相机事件驱动抓帧，曝光时刻转墙钟µs命名",
+        "双相机起步对齐后独立计数抽帧",
+        "  → images/camera{0,1}/<墙钟微秒>_<timeshare UTC纳秒>.jpg",
         "订阅 lio_sam odometry → odom.txt",
         "fork ros2 bag record → rosbag2/",
         "全部落 ~/Desktop/save_pcd/<时间戳>/",

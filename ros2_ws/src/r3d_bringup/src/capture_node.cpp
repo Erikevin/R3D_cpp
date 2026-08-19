@@ -75,6 +75,12 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
   this->declare_parameter<bool>("record_bag", true);
   this->declare_parameter<bool>("save_odom", true);  // 是否落盘 odom.txt（false 时仅录 bag）
   this->declare_parameter<std::string>("bag_topics", "/livox/imu /livox/lidar");
+  // ---- bag 存储调优（大场景防丢帧）----
+  // --max-cache-size：rosbag2 默认缓存仅 100MiB（双缓冲），磁盘被图像/PCD 写入打满、
+  // 写线程排空不及即溢出丢帧；加大以吸收 IO 突刺。0=不传该参数（用默认 100MiB）。
+  this->declare_parameter<int>("bag_max_cache_mb", 256);
+  // 单文件分包上限（MB），超限切新 .db3，防单库随录制时长无限膨胀。0=不分包。
+  this->declare_parameter<int>("bag_max_file_mb", 2000);
 
   odom_topic_ = this->get_parameter("odom_topic").as_string();
   output_dir_ = this->get_parameter("output_dir").as_string();
@@ -91,6 +97,8 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
   record_bag_ = this->get_parameter("record_bag").as_bool();
   const bool save_odom = this->get_parameter("save_odom").as_bool();
   bag_topics_ = this->get_parameter("bag_topics").as_string();
+  bag_max_cache_mb_ = static_cast<int>(this->get_parameter("bag_max_cache_mb").as_int());
+  bag_max_file_mb_ = static_cast<int>(this->get_parameter("bag_max_file_mb").as_int());
 
   cam0_cfg_ = CamConfig{dev0, w, h, cam_fps_, ae, awb, q};
   cam2_cfg_ = CamConfig{dev2, w, h, cam_fps_, ae, awb, q};
@@ -144,9 +152,13 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
     RCLCPP_INFO(this->get_logger(), "📝 odom.txt 落盘已关闭 (save_odom=false)");
   }
 
-  // ---- Livox 时间戳共享内存（保留映射备用；trigger 已改用系统时间戳，不再依赖）----
+  // ---- Livox 时间戳共享内存：文件名第二列读其第二个时间戳（系统 UTC ns）。
+  // 构造时打开映射（get_sys_ns 不做懒 open，避免双采集线程并发 open 竞争）；
+  // livox 未就绪/映射不足 32 字节时第二列为 0。
   if (ts_reader_.open()) {
-    RCLCPP_INFO(this->get_logger(), "⏱️ Livox timeshare 已映射（当前 trigger 未使用）");
+    RCLCPP_INFO(this->get_logger(), "⏱️ Livox timeshare 已映射（第二列读其 UTC 时间戳）");
+  } else {
+    RCLCPP_WARN(this->get_logger(), "⚠️ Livox timeshare 未就绪，图片第二列时间戳将为 0");
   }
 
   // ---- ros2bag 子进程 ----
@@ -177,10 +189,10 @@ CaptureNode::CaptureNode() : rclcpp::Node("image_odom_recorder") {
 
 CaptureNode::~CaptureNode() {
   running_ = false;
-  // 唤醒所有阻塞在条件变量上的线程：IO 落盘线程、ts2 握手中等待第二路的第一路采集线程。
+  // 唤醒所有阻塞在条件变量上的线程：IO 落盘线程、可能仍在起步栅栏等待的采集线程。
   // 其余采集线程阻塞在 grab() 的 poll()，running_=false 后最多 ~poll timeout(1s) 内自行退出。
   io_cv_.notify_all();
-  tshare_.cv.notify_all();
+  start_gate_.cv.notify_all();
   if (cap0_th_.joinable()) {
     cap0_th_.join();
   }
@@ -242,16 +254,14 @@ void CaptureNode::capture_loop(V4L2Camera &cam, const std::string &img_dir,
   std::size_t save_count = 0;
 
   // 首次步调对齐：等两路采集线程都就绪，再同步开始 grab 计数。两路 UVC 独立启动、
-  // 第一帧曝光时刻可能相差很大；若不对齐，后续 period 计数抽帧配对的两路帧会严重错位
-  // （ts2 同名但 frame_ns 差大）。对齐后两路 frame_idx 步调一致，配对帧曝光时刻仅差
-  // 两路曝光边沿（毫秒级）。此后每次保存点的握手仅为共享同一真实 timeshare，两路几乎
-  // 同时到达 → 等待可忽略。
+  // 第一帧曝光时刻可能相差很大；若不对齐，后续 period 计数抽帧配对的两路帧会严重错位。
+  // 对齐后两路 frame_idx 步调一致，配对帧曝光时刻仅差两路曝光边沿（毫秒级）。
   {
-    std::unique_lock<std::mutex> lk(tshare_.mtx);
-    ++tshare_.started;
-    tshare_.cv.wait(lk, [&] { return tshare_.started >= 2 || !running_; });
+    std::unique_lock<std::mutex> lk(start_gate_.mtx);
+    ++start_gate_.started;
+    start_gate_.cv.wait(lk, [&] { return start_gate_.started >= 2 || !running_; });
   }
-  tshare_.cv.notify_all();
+  start_gate_.cv.notify_all();
   RCLCPP_INFO(this->get_logger(), "⌚ [%s] 两路已同步起步，开始计数抽帧", label);
 
   while (running_) {
@@ -262,34 +272,33 @@ void CaptureNode::capture_loop(V4L2Camera &cam, const std::string &img_dir,
     if (!cam.grab(buf, &frame_ns)) {
       continue;
     }
+    // 帧到达即刻采样 timeshare 第二个时间戳（系统 UTC ns），与本帧绑定：用户态无法
+    // 在软中断里执行，这是离 v4l2 时间戳打点最近的采样位置（仅隔 DQBUF→返回的微秒
+    // 级路径）。硬同步下这即"本帧曝光时刻雷达侧正在发布的时戳"。抽帧丢弃的帧同样
+    // 采样但不用（一次 mmap 读，开销可忽略）；未就绪时为 0。
+    const int64_t ts2_ns = ts_reader_.get_sys_ns();
     // 计数抽帧：仅每 period 帧保存一次，帧间均匀分布，不依赖时间戳时基/抖动。
     if (++frame_idx % period != 0) {
       continue;
     }
 
-    // 左右 ts2 同名握手：两路各自事件驱动抽帧，保存时刻不同 → 原始 ts2 不同。第一路到达
-    // 保存点读 timeshare 写入共享，第二路到达用同一值 → 两路第二段严格相同（真实
-    // timeshare，未量化）。第一路等第二路推进 gen（等待 ≈ 两路曝光边沿差，毫秒级）。
-    int64_t shared_ts2;
-    {
-      std::unique_lock<std::mutex> lk(tshare_.mtx);
-      ++tshare_.hits;
-      if (tshare_.hits == 1) {
-        tshare_.ts2_ns = ts_reader_.get_sys_ns();
-        const uint64_t g0 = tshare_.gen;
-        tshare_.cv.wait(lk, [&] { return tshare_.gen != g0 || !running_; });
-      } else {  // hits == 2
-        ++tshare_.gen;
-        tshare_.hits = 0;
-      }
-      shared_ts2 = tshare_.ts2_ns;
-    }
-    tshare_.cv.notify_all();
+    // frame_ns 为 CLOCK_MONOTONIC 时基（开机起算，UVC 驱动曝光时刻）→ 转系统墙钟：
+    // 同拍读两时钟得偏移再加回。墙钟可能被 settimeofday/NTP 调整，偏移不恒定，
+    // 每帧现算（两次 clock_gettime 开销纳秒级），曝光到读钟仅隔 USB 传输（毫秒内）。
+    struct timespec w{}, m{};
+    ::clock_gettime(CLOCK_REALTIME, &w);
+    ::clock_gettime(CLOCK_MONOTONIC, &m);
+    const int64_t wall_now_ns =
+        static_cast<int64_t>(w.tv_sec) * 1000000000LL + w.tv_nsec;
+    const int64_t mono_now_ns =
+        static_cast<int64_t>(m.tv_sec) * 1000000000LL + m.tv_nsec;
+    const int64_t wall_ns = frame_ns + wall_now_ns - mono_now_ns;
 
-    // 文件名第一段 = 驱动曝光时刻(各相机独立)；第二段 = 两路共享的真实 timeshare UTC（同名配对）
+    // 文件名第一段 = 驱动曝光时刻转墙钟纳秒（各相机独立）；第二段 = 本帧到达时刻采样
+    // 的 timeshare UTC 纳秒（见上，左右各自读、无握手等待 → 差毫秒级）。
     char name[64];
-    std::snprintf(name, sizeof(name), "%lld_%lld.jpg",
-                  static_cast<long long>(frame_ns), static_cast<long long>(shared_ts2));
+    std::snprintf(name, sizeof(name), "%lld_%lld.jpg", static_cast<long long>(wall_ns),
+                  static_cast<long long>(ts2_ns));
     enqueue_save(img_dir + "/" + name, std::move(buf), label);
     if (++save_count % 10 == 0) {
       std::size_t cur_dropped = 0;
@@ -318,13 +327,27 @@ void CaptureNode::start_bag() {
     return;
   }
 
-  // argv: ros2 bag record -o <uri> <topic...>
+  // argv: ros2 bag record -o <uri> [--max-cache-size N] [-b N] <topic...>
+  // 大场景丢帧防护（勿加 PRAGMA 调优：rosbag2 的 sqlite 默认已是 journal_mode=MEMORY
+  // + synchronous=OFF 最快档，改 WAL/NORMAL 反而更慢）：
+  //   1) 缓存加大到 bag_max_cache_mb —— 默认 100MiB，图像/PCD 抢占磁盘导致写线程
+  //      排空不及时即溢出丢帧（丢帧集中在磁盘繁忙时段）；
+  //   2) 按 bag_max_file_mb 分包 —— 单 .db3 随录制时长无限膨胀，大场景长时间录制
+  //      写入持续变慢，分包后每文件重置到轻量状态。
   std::vector<std::string> owned;
   owned.emplace_back("ros2");
   owned.emplace_back("bag");
   owned.emplace_back("record");
   owned.emplace_back("-o");
   owned.emplace_back(bag_uri_);
+  if (bag_max_cache_mb_ > 0) {
+    owned.emplace_back("--max-cache-size");
+    owned.emplace_back(std::to_string(static_cast<long long>(bag_max_cache_mb_) * 1024LL * 1024LL));
+  }
+  if (bag_max_file_mb_ > 0) {
+    owned.emplace_back("-b");
+    owned.emplace_back(std::to_string(static_cast<long long>(bag_max_file_mb_) * 1024LL * 1024LL));
+  }
   for (const auto &t : topics) {
     owned.emplace_back(t);
   }
@@ -346,8 +369,13 @@ void CaptureNode::start_bag() {
     _exit(127);  // 仅 exec 失败才到达
   }
   bag_pid_ = pid;
-  RCLCPP_INFO(this->get_logger(), "🎬 bag 录制子进程已启动 pid=%d → %s (话题: %s)", pid,
-              bag_uri_.c_str(), bag_topics_.c_str());
+  RCLCPP_INFO(this->get_logger(),
+              "🎬 bag 录制子进程已启动 pid=%d → %s (话题: %s | 缓存 %dMB%s)", pid,
+              bag_uri_.c_str(), bag_topics_.c_str(),
+              (bag_max_cache_mb_ > 0) ? bag_max_cache_mb_ : 100,
+              (bag_max_file_mb_ > 0)
+                  ? (std::string(", 每 ") + std::to_string(bag_max_file_mb_) + "MB 分包").c_str()
+                  : ", 不分包");
 }
 
 void CaptureNode::stop_bag() {
@@ -358,8 +386,11 @@ void CaptureNode::stop_bag() {
   if (::kill(bag_pid_, SIGINT) == 0) {
     RCLCPP_INFO(this->get_logger(), "🛑 等待 bag 子进程 pid=%d 落盘...", bag_pid_);
   }
-  // 轮询最多 ~3s
-  for (int i = 0; i < 300; ++i) {
+  // 轮询最多 ~9s：大场景长录制缓存积压多、且磁盘可能正被图像/PCD 写入占用，3s 内
+  // flush 不完就被下面的 SIGKILL 打穿（rosbag2 默认 journal_mode=MEMORY，被杀时未
+  // 落盘部分直接丢失）。上层 close_all_windows 阶段 1 已先停 livox 掐断数据源，
+  // flush 量有限，放宽窗口不会明显拖慢停止流程。
+  for (int i = 0; i < 900; ++i) {
     int status = 0;
     const pid_t r = ::waitpid(bag_pid_, &status, WNOHANG);
     if (r == bag_pid_) {

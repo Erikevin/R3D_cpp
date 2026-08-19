@@ -28,6 +28,8 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 'bag_topics', default_value='/livox/imu /livox/lidar'
             ),
+            DeclareLaunchArgument('bag_max_cache_mb', default_value='256'),
+            DeclareLaunchArgument('bag_max_file_mb', default_value='2000'),
             Node(
                 package='r3d_bringup',
                 executable='image_odom_recorder',
@@ -47,6 +49,8 @@ def generate_launch_description():
                         'max_pending': LaunchConfiguration('max_pending'),
                         'record_bag': LaunchConfiguration('record_bag'),
                         'bag_topics': LaunchConfiguration('bag_topics'),
+                        'bag_max_cache_mb': LaunchConfiguration('bag_max_cache_mb'),
+                        'bag_max_file_mb': LaunchConfiguration('bag_max_file_mb'),
                     }
                 ],
             ),

@@ -49,3 +49,4 @@ venv/
 *.log
 core
 core.*
+test_data

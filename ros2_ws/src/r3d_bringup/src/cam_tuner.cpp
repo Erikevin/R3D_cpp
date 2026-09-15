@@ -35,8 +35,16 @@ namespace {
 // 与 adjust_cam_param.py 逐项对应的策略常量
 constexpr double kStepDownMax = 0.4;    // 单轮乘性调整下限（防过冲震荡）
 constexpr double kStepUpMax = 2.5;      // 单轮乘性调整上限
-constexpr int kExpUnitPerMs = 10;       // UVC exposure_absolute 单位 = 100µs → 1ms = 10
+// UVC exposure_absolute 单位 = 100µs → 1ms = 10。必须是 double：int 会把
+// max(min,1)/10、cur/10 整除成 0（实测把左相机曝光下限算成 0.0ms，切 Manual
+// 后曝光清零的相机乘性调整 0×2.5=0 永远起步不了）。
+constexpr double kExpUnitPerMs = 10.0;
 constexpr double kLightTarget = 128.0;  // post_proc_tool 动态提亮的目标亮度
+// 整定默认参数（用户给定经验值）：exposure_absolute=78 单位(7.8ms)、gain=16。
+// 兼任两个角色：① 闭环整定的固定起步值（不依赖切 Manual 后驱动的残留行为——
+// 实测各驱动不一：左相机清零、右相机保留 AE 末值）；② 流卡死时的兜底参数。
+constexpr double kDefaultExpMs = 7.8;
+constexpr int kDefaultGain = 16;
 
 // 控制策略纯函数 —— 与 adjust_cam_param.py policy_step 逐行一致。
 struct StepOut {
@@ -116,21 +124,23 @@ bool frame_stats(const std::vector<uint8_t> &mjpg, double &mean, double &hl) {
   }
 }
 
+// collect_stats 的三种结束方式（区分处理：预算尽保留已调参数，流卡死写兜底参数）
+enum class CollectStatus { Ok, Deadline, Stalled };
+
 // 一轮统计：抓 warmup+frames 帧，丢前 warmup 帧旧参数残留，取后 frames 帧平均
-// （与 CameraWorker.collect_stats 同口径；grab() 排空到最新帧）。deadline 到或
-// 流卡死（连续抓帧失败超限）返回 false。
-bool collect_stats(r3d_camodom::V4L2Camera &cam, const CamTuneConfig &cfg,
-                   std::chrono::steady_clock::time_point deadline, double &mean_out,
-                   double &hl_out) {
+// （与 CameraWorker.collect_stats 同口径；grab() 排空到最新帧）。
+CollectStatus collect_stats(r3d_camodom::V4L2Camera &cam, const CamTuneConfig &cfg,
+                            std::chrono::steady_clock::time_point deadline,
+                            double &mean_out, double &hl_out) {
   double sum_mean = 0, sum_hl = 0;
   int warm_left = cfg.warmup, stat_left = cfg.frames;
   // 帧级失败预算：坏帧/超时帧跳过重抓，连续超限视作流卡死（grab 内部 poll 1s 超时）
   int fail_budget = cfg.warmup + cfg.frames + 4;
   while (warm_left > 0 || stat_left > 0) {
-    if (std::chrono::steady_clock::now() >= deadline) return false;
+    if (std::chrono::steady_clock::now() >= deadline) return CollectStatus::Deadline;
     std::vector<uint8_t> buf;
     if (!cam.grab(buf)) {
-      if (--fail_budget < 0) return false;
+      if (--fail_budget < 0) return CollectStatus::Stalled;
       continue;
     }
     if (warm_left > 0) {
@@ -139,7 +149,7 @@ bool collect_stats(r3d_camodom::V4L2Camera &cam, const CamTuneConfig &cfg,
     }
     double m, h;
     if (!frame_stats(buf, m, h)) {  // 坏帧不计入统计，重抓
-      if (--fail_budget < 0) return false;
+      if (--fail_budget < 0) return CollectStatus::Stalled;
       continue;
     }
     sum_mean += m;
@@ -148,7 +158,7 @@ bool collect_stats(r3d_camodom::V4L2Camera &cam, const CamTuneConfig &cfg,
   }
   mean_out = sum_mean / cfg.frames;
   hl_out = sum_hl / cfg.frames;
-  return true;
+  return CollectStatus::Ok;
 }
 
 std::string fmt1(double v) {
@@ -164,7 +174,7 @@ CamTuneResult cam_tune_one(const CamTuneConfig &cfg) {
   const auto t0 = std::chrono::steady_clock::now();
   const auto deadline = t0 + std::chrono::milliseconds(cfg.budget_ms);
 
-  // 640x480 MJPG 小流：30fps 下每轮 6 帧仅 ~0.2s，2s 预算内可跑满 5 轮。
+  // 640x480 MJPG 小流：30fps 下每轮 6 帧仅 ~0.2s，3s 预算内可跑满 5 轮。
   // auto_exposure=false → open() 即切 Manual（驱动保留 AE 最后值作整定起点）；
   // auto_wb=true 不动白平衡；jpeg_quality=0 跳过质量设置（亮度统计不敏感）。
   r3d_camodom::CamConfig cc;
@@ -196,19 +206,11 @@ CamTuneResult cam_tune_one(const CamTuneConfig &cfg) {
   // to_manual 补充：关 dynamic_framerate（防曝光拉长降帧率拖慢统计）。尽力而为。
   cam.set_ctrl(V4L2_CID_EXPOSURE_DYNAMIC_FRAMERATE, 0);
 
-  // 起点 = 切 Manual 后驱动保留的当前值（AE 的最后值），与 Python 流程一致。
-  int32_t cur = 0;
-  double exp_ms = 5.0, gain = 0.0;
-  if (cam.get_ctrl(V4L2_CID_EXPOSURE_ABSOLUTE, cur)) exp_ms = cur / kExpUnitPerMs;
-  if (has_gain && cam.get_ctrl(V4L2_CID_GAIN, cur)) gain = cur;
-
-  log::info("📁 " + cfg.side + "相机 " + cfg.device + " | 曝光范围 " +
-            fmt1(exp_min_ms) + "~" + fmt1(exp_max / kExpUnitPerMs) + "ms | 增益范围 " +
-            (has_gain ? (std::to_string(gain_min) + "~" + std::to_string(gain_max))
-                      : std::string("无")));
-  log::info("初始: exp=" + fmt1(exp_ms) + "ms gain=" + std::to_string((int)std::lround(gain)) +
-            " | 目标 mean=" + fmt1(cfg.target) + "±" + fmt1(cfg.tol) + " 高光≤" +
-            fmt1(cfg.hl_max * 100) + "%");
+  // 起点 = 固定默认参数（kDefaultExpMs/kDefaultGain），不用切 Manual 后驱动的
+  // 残留值：各驱动保留行为不一（实测左相机清零致 0×2.5=0 起不了步、右相机保留
+  // AE 末值），统一从默认值起步，行为可预期，闭环再校到目标。
+  double exp_ms = kDefaultExpMs;
+  double gain = has_gain ? kDefaultGain : 0.0;
 
   // 写入值夹到控制项范围（与 make_param_setter.set_params 的 clip 一致）
   auto apply_params = [&](double e_ms, double g) {
@@ -222,8 +224,19 @@ CamTuneResult cam_tune_one(const CamTuneConfig &cfg) {
     }
   };
 
+  log::info("📁 " + cfg.side + "相机 " + cfg.device + " | 曝光范围 " +
+            fmt1(exp_min_ms) + "~" + fmt1(exp_max / kExpUnitPerMs) + "ms | 增益范围 " +
+            (has_gain ? (std::to_string(gain_min) + "~" + std::to_string(gain_max))
+                      : std::string("无")));
+  log::info("初始(默认起步): exp=" + fmt1(exp_ms) + "ms gain=" + std::to_string((int)std::lround(gain)) +
+            " | 目标 mean=" + fmt1(cfg.target) + "±" + fmt1(cfg.tol) + " 高光≤" +
+            fmt1(cfg.hl_max * 100) + "%");
+  apply_params(exp_ms, gain);  // 先落默认起步值，settle 后进闭环
+  std::this_thread::sleep_for(std::chrono::milliseconds(cfg.settle_ms));
+
   bool converged = false;
   bool budget_out = false;  // 轮数/预算用尽而停（末次参数未经统计复核）
+  bool stalled = false;     // 流卡死而停（已写兜底手动参数）
   double mean = 0, hl = 0;
   int rounds_done = 0;  // 完成了统计的轮数（done/stuck 轮计入；未开始的预算轮不计）
   for (int it = 1; it <= cfg.max_iter; ++it) {
@@ -231,10 +244,20 @@ CamTuneResult cam_tune_one(const CamTuneConfig &cfg) {
       budget_out = true;
       break;
     }
-    if (!collect_stats(cam, cfg, deadline, mean, hl)) {
-      log::warn("📷 [" + cfg.side + "] 整定失败：取帧超时/流卡死（轮次 " +
-                std::to_string(it) + "），回退自动曝光");
-      return res;  // ok=false —— 已切手动但参数未经复核，交给 AE 兜底更稳
+    const CollectStatus cs = collect_stats(cam, cfg, deadline, mean, hl);
+    if (cs == CollectStatus::Deadline) {
+      budget_out = true;  // 预算尽：上一轮已 apply 的参数方向正确，保留手动
+      break;
+    }
+    if (cs == CollectStatus::Stalled) {
+      // 流卡死：不回退 AE，直接写默认手动参数（未经本轮统计复核）。
+      exp_ms = kDefaultExpMs;
+      if (has_gain) gain = kDefaultGain;
+      apply_params(exp_ms, gain);
+      stalled = true;
+      log::warn("📷 [" + cfg.side + "] 流卡死，已写默认参数 exp=" + fmt1(kDefaultExpMs) +
+                "ms gain=" + std::to_string(kDefaultGain));
+      break;
     }
     ++rounds_done;
     StepOut st = policy_step(mean, hl, exp_ms, gain, cfg, exp_min_ms, gain_min);
@@ -264,9 +287,11 @@ CamTuneResult cam_tune_one(const CamTuneConfig &cfg) {
 
   const double factor =
       std::min(std::max(kLightTarget / std::max(mean, 1.0), 1.0), 2.0);
-  std::string verdict = converged ? "✅ 收敛" : budget_out ? "⚠️ 轮次/预算用尽，末次参数未复核"
-                        : (mean < cfg.target - cfg.tol) ? "⚠️ 仍偏暗（已达参数边界）"
-                                                        : "⚠️ 仍偏曝（已达参数边界）";
+  std::string verdict = converged                        ? "✅ 收敛"
+                        : stalled                        ? "⚠️ 流卡死，回到默认参数"
+                        : budget_out                     ? "⚠️ 轮次/预算用尽，末次参数未复核"
+                        : (mean < cfg.target - cfg.tol)  ? "⚠️ 仍偏暗（已达参数边界）"
+                                                         : "⚠️ 仍偏曝（已达参数边界）";
   const int ms = static_cast<int>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - t0).count());
@@ -281,9 +306,9 @@ CamTuneResult cam_tune_one(const CamTuneConfig &cfg) {
 bool cam_tune_pair() {
   CamTuneConfig lc, rc;
   lc.device = config::TUNE_DEV0;
-  lc.side = "左";
+  lc.side = "右";  // 实机核验：video0 为右相机
   rc.device = config::TUNE_DEV2;
-  rc.side = "右";
+  rc.side = "左";  // 实机核验：video2 为左相机
 
   CamTuneResult lr, rr;
   log::info("📷 相机参数整定开始（≤" + std::to_string(lc.budget_ms) + "ms，双机并行）...");

@@ -42,11 +42,11 @@ inline constexpr const char* MAPPING_CMD_FILE_ENV     = "R3D_MAPPING_CMD_FILE";
 inline constexpr const char* MAPPING_CMD_FILE_DEFAULT = "ros2_ws/src/r3d_bringup/config/mapping_commands.json";
 
 // ---- startRecord 前置相机整定（adjust_cam_param 快速档） ---------------------
-// 收到 startRecord 后先整定左右相机曝光/增益（cam_tuner.hpp，≤2s、≤5轮、双机
+// 收到 startRecord 后先整定左右相机曝光/增益（cam_tuner.hpp，≤3s、≤5轮、双机
 // 并行），完成后才拉起建图进程链。设备须与 image_odom_recorder 的
 // camera_device0/camera_device2 参数一致（默认 /dev/video0 与 /dev/video2）。
 inline constexpr bool TUNE_ENABLE = true;   // false=跳过整定，直接按原流程启动
-inline constexpr const char* TUNE_DEV0 = "/dev/video0";  // 左相机（camera0）
-inline constexpr const char* TUNE_DEV2 = "/dev/video2";  // 右相机（camera1）
+inline constexpr const char* TUNE_DEV0 = "/dev/video0";  // 右相机（实机核验）
+inline constexpr const char* TUNE_DEV2 = "/dev/video2";  // 左相机（实机核验）
 
 } // namespace r3d_ws::config

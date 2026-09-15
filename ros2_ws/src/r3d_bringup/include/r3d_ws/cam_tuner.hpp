@@ -3,10 +3,11 @@
 // post_proc_tool/v4l2_tune.py 的 policy_step 闭环：抓帧 → 统计平均亮度/高光占比 →
 // 按策略改 exposure/gain → 重复直到收敛。
 //
-// 与桌面端工具的差异只在档位：本版受 2 s 总预算 / ≤5 轮约束（startRecord 到拉起
+// 与桌面端工具的差异只在档位：本版受 3 s 总预算 / ≤5 轮约束（startRecord 到拉起
 // 建图进程链之间只留这么久），故用 640x480@30fps 小流抓帧压缩每轮耗时；策略本体
 // （目标 120±15、高光≤8%、先曝光后增益、单轮乘性 ×0.4~×2.5、顶边界判定）与
-// adjust_cam_param.py 逐行一致。
+// adjust_cam_param.py 逐行一致。整定起点为固定默认参数 kDefaultExpMs/kDefaultGain
+// （exposure_absolute=78 即 7.8ms、gain=16），不用切 Manual 后驱动的残留值。
 //
 // 亮度统计与分辨率无关（同一传感器同一曝光），小流统计的整定值对录制用的
 // 2592x1944 全分辨率流同样成立 —— 桌面端工具同样以预览小流统计、整定结果供
@@ -27,9 +28,11 @@ struct CamTuneConfig {
   int max_gain = 64;         // 增益上限（再大噪点明显）
   int warmup = 3;            // 每轮丢弃的旧参数残留帧数（Python 版 4，快速档 3）
   int frames = 3;            // 每轮统计帧数（Python 版 5，快速档 3）
-  int settle_ms = 80;        // 改参后等相机稳定时长（Python 版 350ms）
+  int settle_ms = 60;        // 改参后等相机稳定时长（Python 版 350ms；板上实测
+                             // open 已耗 ~1s，压缩 settle 给整定轮留预算）
   int max_iter = 5;          // 最大迭代轮数（预算要求；Python 版 10）
-  int budget_ms = 2000;      // 单相机总时长预算（硬上限，含打开相机）
+  int budget_ms = 3000;      // 单相机总时长预算（硬上限，含打开相机；板上实测
+                             // open 即耗 ~1s，2s 下有效轮次不足，放宽到 3s）
   int width = 640;           // 整定用小分辨率（30fps 下每轮 6 帧仅 ~0.2s）
   int height = 480;
   int fps = 30;

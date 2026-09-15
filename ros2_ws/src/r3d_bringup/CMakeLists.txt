@@ -79,6 +79,12 @@ add_executable(image_odom_recorder src/image_odom_recorder_main.cpp)
 target_link_libraries(image_odom_recorder ${PROJECT_NAME}_camodom_lib)
 ament_target_dependencies(image_odom_recorder rclcpp)
 
+# ---- r3d_cam_tuner_mock: cam_tuner 无硬件闭环测试（拦截 V4L2 系统调用） ------
+# 仅本地验证用，不 install。跑法：build/r3d_bringup/r3d_cam_tuner_mock [场景名]
+add_executable(r3d_cam_tuner_mock src/test_cam_tuner.cpp)
+target_link_libraries(r3d_cam_tuner_mock ${PROJECT_NAME}_lib ${CMAKE_DL_LIBS})
+ament_target_dependencies(r3d_cam_tuner_mock OpenCV)
+
 # ---- install ---------------------------------------------------------------
 install(TARGETS
     r3d_ws_bridge

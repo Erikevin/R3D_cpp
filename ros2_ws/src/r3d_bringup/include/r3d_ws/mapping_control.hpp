@@ -21,6 +21,7 @@
 #include <nlohmann/json.hpp>
 
 #include <mutex>
+#include <optional>
 #include <string>
 #include <sys/types.h>
 #include <vector>
@@ -47,6 +48,11 @@ class MappingControl {
   // process group. No display / terminal required.
   void start_mapping_commands();
   void close_all_windows();
+
+  // startRecord 前置整定的曝光模式覆盖：tuned=true → camera 以 auto_exposure:=false
+  // 启动（V4L2Camera 切 Manual 时保留驱动里的整定值）；tuned=false → 用配置文件的
+  // auto_exposure（AE 兜底）。每次 startRecord 整定后重设。
+  void set_exposure_tuned(bool tuned);
 
   bool mapping_ready() const;
 
@@ -100,6 +106,9 @@ class MappingControl {
   pid_t lio_sam_pid_{-1};
   pid_t camera_pid_{-1};
   bool mapping_ready_{false};
+  // startRecord 整定结果覆盖（m_ 保护）：engaged 时 start_mapping_commands 用
+  // *value 替代 cmds_.auto_exposure 注入 camera。nullopt=未整定/整定失败。
+  std::optional<bool> exp_override_;
   const LoadedCommands cmds_;  // write-once in ctor; read-only thereafter
 };
 

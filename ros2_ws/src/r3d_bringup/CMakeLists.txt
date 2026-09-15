@@ -26,6 +26,21 @@ find_package(OpenCV REQUIRED)
 find_package(Threads REQUIRED)
 # boost::beast / boost::asio are header-only; no link line needed.
 
+# ---- 相机录制器静态库 (= R3D/camera/camera_two_value.py) -------------------
+# 独立于 ws_bridge：仅依赖 rclcpp/nav_msgs/Threads，不引入 OpenCV/boost。
+# 定义在 ws_lib 之前：ws_lib 的 cam_tuner（startRecord 前置整定）复用其 V4L2Camera。
+add_library(${PROJECT_NAME}_camodom_lib STATIC
+  src/v4l2_camera.cpp
+  src/odom_writer.cpp
+  src/ts_reader.cpp
+  src/capture_node.cpp
+)
+target_include_directories(${PROJECT_NAME}_camodom_lib PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+ament_target_dependencies(${PROJECT_NAME}_camodom_lib rclcpp nav_msgs)
+target_link_libraries(${PROJECT_NAME}_camodom_lib Threads::Threads)
+
 # ---- core library (static — linked into each executable) ------------------
 # NOTE: ament_target_dependencies() uses the *plain* signature of
 # target_link_libraries, so every target_link_libraries() in this file must
@@ -34,6 +49,7 @@ add_library(${PROJECT_NAME}_lib STATIC
   src/ws_bridge_node.cpp
   src/ws_server.cpp
   src/mapping_control.cpp
+  src/cam_tuner.cpp
 )
 target_include_directories(${PROJECT_NAME}_lib PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -41,7 +57,7 @@ target_include_directories(${PROJECT_NAME}_lib PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 ament_target_dependencies(${PROJECT_NAME}_lib rclcpp sensor_msgs nav_msgs)
-target_link_libraries(${PROJECT_NAME}_lib ${OpenCV_LIBS} Threads::Threads)
+target_link_libraries(${PROJECT_NAME}_lib ${OpenCV_LIBS} Threads::Threads ${PROJECT_NAME}_camodom_lib)
 
 # ---- r3d_ws_bridge: the WebSocket bridge node (= web_a.py) ------------------
 add_executable(r3d_ws_bridge src/main.cpp)
@@ -57,20 +73,6 @@ target_link_libraries(mock_publisher ${OpenCV_LIBS})
 add_executable(r3d_bench src/bench.cpp)
 target_link_libraries(r3d_bench ${PROJECT_NAME}_lib)
 ament_target_dependencies(r3d_bench sensor_msgs)
-
-# ---- 相机录制器静态库 (= R3D/camera/camera_two_value.py) -------------------
-# 独立于 ws_bridge：仅依赖 rclcpp/nav_msgs/Threads，不引入 OpenCV/boost。
-add_library(${PROJECT_NAME}_camodom_lib STATIC
-  src/v4l2_camera.cpp
-  src/odom_writer.cpp
-  src/ts_reader.cpp
-  src/capture_node.cpp
-)
-target_include_directories(${PROJECT_NAME}_camodom_lib PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-)
-ament_target_dependencies(${PROJECT_NAME}_camodom_lib rclcpp nav_msgs)
-target_link_libraries(${PROJECT_NAME}_camodom_lib Threads::Threads)
 
 # ---- image_odom_recorder: 双相机 V4L2 MJPG + Livox 时间戳同步 + odom + ros2bag
 add_executable(image_odom_recorder src/image_odom_recorder_main.cpp)

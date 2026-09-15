@@ -402,6 +402,13 @@ MappingControl::LoadedCommands MappingControl::load_commands_from_file() {
   return out;
 }
 
+void MappingControl::set_exposure_tuned(bool tuned) {
+  std::lock_guard<std::mutex> lk(m_);
+  // tuned=true：整定值已在驱动里，camera 以手动模式打开即沿用（见 V4L2Camera::open
+  // 的 MANUAL 分支——切模式不动参数）。tuned=false：清覆盖，回退配置文件的 auto_exposure。
+  exp_override_ = tuned ? std::optional<bool>(false) : std::nullopt;
+}
+
 void MappingControl::start_mapping_commands() {
   try {
     // 启动 Livox 前先清理可能残留的 livox_ros_driver2 实例，避免多实例争抢 MID360 设备/UDP 端口
@@ -434,16 +441,28 @@ void MappingControl::start_mapping_commands() {
       log::info(std::string("[mapping] 数据存储根目录: ") + cmds_.data_dir + "/<时间戳>");
     }
     // 相机自动曝光/白平衡开关注入（ROS 参数为 bool，:=true / :=false 直接生效）。
+    // auto_exposure 生效值 = 整定覆盖（exp_override_）优先，否则配置文件值：
+    // startRecord 整定成功后覆盖为 false（手动，保留驱动里的整定值）。
+    bool auto_exposure = cmds_.auto_exposure;
+    bool exp_overridden = false;
+    {
+      std::lock_guard<std::mutex> lk(m_);
+      if (exp_override_.has_value()) {
+        auto_exposure = *exp_override_;
+        exp_overridden = true;
+      }
+    }
     // 注意：两个 const char* 字面量之间无 operator+，须分别 += 拼到 std::string（不像
     // data_dir 那行有 std::string 操作数可触发 string::operator+）。
     cam_cmd += " -p auto_exposure:=";
-    cam_cmd += cmds_.auto_exposure ? "true" : "false";
+    cam_cmd += auto_exposure ? "true" : "false";
     cam_cmd += " -p auto_wb:=";
     cam_cmd += cmds_.auto_wb ? "true" : "false";
     cam_cmd += " -p save_odom:=";
     cam_cmd += cmds_.save_odom ? "true" : "false";
     log::info(std::string("[mapping] 相机 auto_exposure=") +
-              (cmds_.auto_exposure ? "true" : "false") +
+              (auto_exposure ? "true" : "false") +
+              (exp_overridden ? "(整定覆盖)" : "") +
               " auto_wb=" + (cmds_.auto_wb ? "true" : "false") +
               " save_odom=" + (cmds_.save_odom ? "true" : "false"));
     if (pid_t pid = launch_background(cam_cmd, "camera"); pid > 0) {

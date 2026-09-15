@@ -48,6 +48,14 @@ public:
   // 成功返回 true 并填充 out；frame_ns 非空时写入驱动曝光时刻（v4l2_buffer.timestamp）纳秒。
   bool grab(std::vector<uint8_t> &out, int64_t *frame_ns = nullptr);
 
+  // ---- v4l2 控制项直通（startRecord 前的曝光/增益整定用） ----
+  // 按 control id 走 VIDIOC_S_CTRL / G_CTRL / QUERYCTRL，绕过 v4l2-ctl 名字解析
+  // （等价 adjust_cam_param.py 的 exposure_time_absolute / gain）。
+  // fd 未打开或驱动不支持该 id 时返回 false。
+  bool set_ctrl(uint32_t id, int32_t value);
+  bool get_ctrl(uint32_t id, int32_t &value_out);
+  bool query_ctrl_range(uint32_t id, int32_t &min_out, int32_t &max_out);
+
   // 释放 streaming / mmap / fd。
   void release();
 

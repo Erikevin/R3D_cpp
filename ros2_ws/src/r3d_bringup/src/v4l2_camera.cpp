@@ -43,6 +43,32 @@ V4L2Camera::V4L2Camera(const CamConfig &cfg) : cfg_(cfg) {}
 
 V4L2Camera::~V4L2Camera() { release(); }
 
+// ---- 控制项直通（整定用，见 v4l2_camera.hpp） ----
+// 控制类 ioctl 与数据流 ioctl 对同一 fd 可并发（UVC 控制走独立通道），不加 grab 锁。
+bool V4L2Camera::set_ctrl(uint32_t id, int32_t value) {
+  if (fd_ < 0) return false;
+  return set_control(id, value);
+}
+
+bool V4L2Camera::get_ctrl(uint32_t id, int32_t &value_out) {
+  if (fd_ < 0) return false;
+  v4l2_control c{};
+  c.id = id;
+  if (xioctl(fd_, VIDIOC_G_CTRL, &c) < 0) return false;
+  value_out = c.value;
+  return true;
+}
+
+bool V4L2Camera::query_ctrl_range(uint32_t id, int32_t &min_out, int32_t &max_out) {
+  if (fd_ < 0) return false;
+  v4l2_queryctrl q{};
+  q.id = id;
+  if (xioctl(fd_, VIDIOC_QUERYCTRL, &q) < 0 || (q.flags & V4L2_CTRL_FLAG_DISABLED)) return false;
+  min_out = q.minimum;
+  max_out = q.maximum;
+  return true;
+}
+
 bool V4L2Camera::set_control(uint32_t id, int32_t value) {
   v4l2_control c{};
   c.id = id;

@@ -2,6 +2,8 @@
 
 #include "r3d_ws/ws_bridge_node.hpp"
 
+#include "r3d_ws/cam_tuner.hpp"
+#include "r3d_ws/config.hpp"
 #include "r3d_ws/logger.hpp"
 
 #include <opencv2/imgcodecs.hpp>
@@ -151,12 +153,21 @@ void WsBridgeNode::handle_command(const nlohmann::json& msg,
     state_->clear_buffers();
     state_->is_recording.store(true);
     state_->mapping_ready.store(false);
-    MappingControl::write_shared_cmd(1);
     log::info("🟢 开始建图...");
-    // Mirror the 5 s pause + terminal launch, off the io thread.
+    // Tune cameras FIRST (≤2 s), then launch the rest of the chain — off the io
+    // thread. Tuning must finish before image_odom_recorder opens the cameras
+    // (V4L2 devices are exclusive), and before anything else is started.
     auto state = state_;
     auto mapping = mapping_;
     std::thread([state, mapping] {
+      // 1) 相机曝光/增益快速整定（策略对齐 adjust_cam_param，双机并行，≤2s/≤5轮）。
+      //    全部成功 → 之后 camera 以手动曝光启动，沿用驱动里的整定值；
+      //    任一失败 → 回退配置文件的 auto_exposure（AE 兜底）。
+      const bool tuned = config::TUNE_ENABLE && cam_tune_pair();
+      mapping->set_exposure_tuned(tuned);
+      // 2) 整定完成后再开启其余进程：雷达 IPC → 5s 暂停 → livox/lio_sam/camera
+      //    （镜像原 5 s pause + 后台启动链）。
+      MappingControl::write_shared_cmd(1);
       std::this_thread::sleep_for(std::chrono::seconds(5));
       mapping->start_mapping_commands();
       state->mapping_ready.store(mapping->mapping_ready());

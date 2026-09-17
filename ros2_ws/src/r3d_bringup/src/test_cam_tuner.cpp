@@ -10,14 +10,15 @@
 //     内部调用不受影响。
 //
 // 场景（命令行参数选择，缺省全跑）：
-//   dark    暗场景（默认参数下 mean≈60）→ 应升曝光/增益收敛
-//   bright  亮场景（mean≈200）           → 应压曝光收敛
-//   normal  正常场景（mean≈125）         → 一轮即收敛
-//   stalled 流卡死（DQBUF 持续 EINVAL）  → 应回写默认参数 7.8ms/16 且 ok=true
-//   slowfps 帧率 3fps                    → 预算尽退出，保留已调参数
-//   noopen  设备不存在                   → ok=false
-//   noexp   无曝光控制项                 → ok=false
-//   pair    双机并行（cam_tune_pair）    → 全部 ok
+//   dark     暗场景（默认参数下 mean≈30）→ 应升曝光/增益收敛（3 轮内）
+//   bright   亮场景（mean≈200）           → 应压曝光收敛
+//   saturated 削顶过曝（真实亮度 400，mean 钳 ~255、hl≈11%）→ 削顶感知步长 3 轮内收敛
+//   normal   正常场景（mean≈70）          → 一轮即收敛
+//   stalled  流卡死（DQBUF 持续 EINVAL） → 应回写默认参数 7.8ms/16 且 ok=true
+//   slowfps  帧率 3fps                    → 预算尽退出，保留已调参数
+//   noopen   设备不存在                   → ok=false
+//   noexp    无曝光控制项                 → ok=false
+//   pair     双机并行（cam_tune_pair）    → 全部 ok
 //
 // 构建产物仅本地验证用，不随包 install：colcon build 后跑
 //   build/r3d_bringup/r3d_cam_tuner_mock
@@ -58,7 +59,7 @@ struct MockCam {
   int exp_min = 0, exp_max = 10000;   // exposure_absolute 原始单位（100µs）
   int gain_min = 16, gain_max = 248;
   int exp_raw = 78, gain = 16;        // 与默认起步值一致
-  double scene = 125.0;               // 默认参数(7.8ms/16)下的画面 mean
+  double scene = 70.0;                // 默认参数(7.8ms/16)下的画面 mean
   bool stall = false;                 // DQBUF 持续失败（流卡死/设备异常）
   double fps = 30.0;
 
@@ -333,10 +334,10 @@ void run_case(const char *name, MockCam cam, const std::string &dev,
               (int)r.ok, (int)r.converged, r.iters, r.mean, r.exp_ms, r.gain, ms);
   CHECK(r.ok == expect_ok, "ok 符合预期");
   CHECK(r.converged == expect_conv, "converged 符合预期");
-  CHECK(r.iters <= 5, "轮数 ≤5");
+  CHECK(r.iters <= 3, "轮数 ≤3");
   CHECK(ms <= 3500, "耗时 ≤3.5s（预算 3s）");
   if (expect_conv)
-    CHECK(std::fabs(r.mean - 120.0) <= 20.0, "末轮 mean 落在 120±20");
+    CHECK(std::fabs(r.mean - 70.0) <= 20.0, "末轮 mean 落在 70±20");
 }
 
 void case_pair() {
@@ -344,7 +345,7 @@ void case_pair() {
   mock_reset();
   MockCam right, left;  // config::TUNE_DEV0=video0(右) TUNE_DEV2=video2(左)
   right.scene = 200.0;  // 右亮
-  left.scene = 60.0;    // 左暗
+  left.scene = 40.0;    // 左暗（需升增益支；60 会落在死区一轮直过）
   left.gain_min = 0;    // 两台增益范围模拟实机差异
   left.gain_max = 128;
   mock_register("/dev/video0", right);
@@ -370,8 +371,8 @@ int main(int argc, char **argv) {
 
   if (want("dark")) {
     MockCam c;
-    c.scene = 60.0;
-    run_case("dark（默认参数下 mean≈60，应升曝光/增益收敛）", c, "/dev/video10",
+    c.scene = 30.0;
+    run_case("dark（默认参数下 mean≈30，应升曝光/增益收敛）", c, "/dev/video10",
              true, true);
   }
   if (want("bright")) {
@@ -379,10 +380,16 @@ int main(int argc, char **argv) {
     c.scene = 200.0;
     run_case("bright（mean≈200，应压曝光收敛）", c, "/dev/video11", true, true);
   }
+  if (want("saturated")) {
+    MockCam c;
+    c.scene = 400.0;  // 真实亮度 400：mean 削顶 ~255、hl≈11%（mock 的 >235 撒高光）
+    run_case("saturated（mean 削顶 ~255，削顶感知步长 3 轮内收敛）", c,
+             "/dev/video16", true, true);
+  }
   if (want("normal")) {
     MockCam c;
-    c.scene = 125.0;
-    run_case("normal（mean≈125，一轮即收敛）", c, "/dev/video12", true, true);
+    c.scene = 70.0;
+    run_case("normal（mean≈70，一轮即收敛）", c, "/dev/video12", true, true);
   }
   if (want("stalled")) {
     MockCam c;

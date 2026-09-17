@@ -1,0 +1,315 @@
+<title>相机整定流程</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<style>
+:root{
+  --ground:#F5F3EE; --surface:#FFFFFF;
+  --ink:#232A33; --ink2:#3D4652; --muted:#68727E; --line:#D8D4CB;
+  --accent:#0E6E8C; --accent-bg:#E7F0F3;
+  --over:#B4432E; --over-bg:#F9E9E4;
+  --under:#3E5FAE; --under-bg:#E9EEF9;
+  --ok:#2E7D4F; --ok-bg:#E6F2EA;
+  --warn:#8F6A1C; --warn-bg:#F6EED9;
+  --fail:#A63A26; --fail-bg:#F7E7E1;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#141922; --surface:#1C242F;
+    --ink:#E9EDF3; --ink2:#C3CBD6; --muted:#93A0B0; --line:#344050;
+    --accent:#56B8D0; --accent-bg:#18242C;
+    --over:#E07A62; --over-bg:#33221E;
+    --under:#8FA9EC; --under-bg:#202839;
+    --ok:#7FC79E; --ok-bg:#1E3226;
+    --warn:#D9AF5E; --warn-bg:#332B1B;
+    --fail:#E0765F; --fail-bg:#331F1B;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#141922; --surface:#1C242F;
+  --ink:#E9EDF3; --ink2:#C3CBD6; --muted:#93A0B0; --line:#344050;
+  --accent:#56B8D0; --accent-bg:#18242C;
+  --over:#E07A62; --over-bg:#33221E;
+  --under:#8FA9EC; --under-bg:#202839;
+  --ok:#7FC79E; --ok-bg:#1E3226;
+  --warn:#D9AF5E; --warn-bg:#332B1B;
+  --fail:#E0765F; --fail-bg:#331F1B;
+}
+body{
+  background:var(--ground); color:var(--ink);
+  font-family:"IBM Plex Sans","Noto Sans SC",system-ui,sans-serif;
+  line-height:1.6; margin:0; padding:34px 20px 52px;
+}
+.wrap{max-width:1064px;margin:0 auto}
+.eyebrow{font:600 11px "IBM Plex Mono",monospace;color:var(--muted);letter-spacing:.05em;margin-bottom:10px}
+h1{font-size:27px;font-weight:700;margin:0 0 6px;text-wrap:balance}
+.sub{font-size:14.5px;color:var(--muted);margin:0 0 18px;max-width:72ch}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px}
+.chip{font:500 11.5px "IBM Plex Mono","Noto Sans SC",monospace;color:var(--ink2);border:1px solid var(--line);border-radius:999px;padding:3px 10px;background:var(--surface)}
+.seclabel{display:flex;align-items:center;gap:12px;margin:42px 0 14px;font:600 12px "IBM Plex Sans","Noto Sans SC",sans-serif;letter-spacing:.1em;color:var(--accent);text-transform:uppercase}
+.seclabel::after{content:"";flex:1;height:1px;background:var(--line)}
+figure{margin:0}
+.fig-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:14px}
+.fig-scroll svg{display:block;width:100%;height:auto;min-width:860px}
+figcaption{font-size:12.5px;color:var(--muted);margin-top:10px;line-height:1.7;max-width:96ch}
+figcaption .fo{color:var(--over);font-weight:600}
+.tbl-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;min-width:760px}
+th{font:600 11px "IBM Plex Sans","Noto Sans SC",sans-serif;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);text-align:left;padding:10px 14px;border-bottom:2px solid var(--line)}
+td{font-size:13px;color:var(--ink2);padding:9px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+td.v{font-family:"IBM Plex Mono",monospace;font-size:12px;white-space:nowrap}
+td .g{color:var(--ok);font-weight:600} td .w{color:var(--warn);font-weight:600} td .f{color:var(--fail);font-weight:600}
+.foot{margin-top:26px;font-size:12.5px;color:var(--muted);line-height:1.8}
+.foot code{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--ink2)}
+/* svg */
+.pill{fill:var(--surface);stroke:var(--ink);stroke-width:1.3}
+.box{fill:var(--surface);stroke:var(--line);stroke-width:1.2}
+.dec{fill:var(--surface);stroke:var(--accent);stroke-width:1.5}
+.loop{fill:none;stroke:var(--accent);stroke-width:1.1;stroke-dasharray:6 5;opacity:.8}
+.bOver{fill:var(--over-bg);stroke:var(--over);stroke-width:1.4}
+.bUnder{fill:var(--under-bg);stroke:var(--under);stroke-width:1.4}
+.bOk{fill:var(--ok-bg);stroke:var(--ok);stroke-width:1.4}
+.bWarn{fill:var(--warn-bg);stroke:var(--warn);stroke-width:1.4}
+.bFail{fill:var(--fail-bg);stroke:var(--fail);stroke-width:1.4}
+.bAcc{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.5}
+.tt{font:600 14px "IBM Plex Sans","Noto Sans SC",sans-serif;fill:var(--ink)}
+.ttS{font:600 13px "IBM Plex Sans","Noto Sans SC",sans-serif;fill:var(--ink)}
+.ts{font:400 12px "IBM Plex Sans","Noto Sans SC",sans-serif;fill:var(--ink2)}
+.tm{font:400 12px "IBM Plex Mono",monospace;fill:var(--ink2)}
+.tmeta{font:400 11px "IBM Plex Sans","Noto Sans SC",sans-serif;fill:var(--muted)}
+.lb{font:500 11px "IBM Plex Sans","Noto Sans SC",sans-serif;fill:var(--muted)}
+.cap{font:600 11px "IBM Plex Sans","Noto Sans SC",sans-serif;letter-spacing:.08em;fill:var(--accent)}
+.cO{fill:var(--over)} .cU{fill:var(--under)} .cG{fill:var(--ok)} .cW{fill:var(--warn)} .cF{fill:var(--fail)} .cA{fill:var(--accent)}
+.ln{stroke:var(--ink);stroke-width:1.5;fill:none}
+.lnM{stroke:var(--muted);stroke-width:1.3;fill:none}
+.lnO{stroke:var(--over);stroke-width:1.5;fill:none}
+.lnU{stroke:var(--under);stroke-width:1.5;fill:none}
+.lnG{stroke:var(--ok);stroke-width:1.5;fill:none}
+.lnW{stroke:var(--warn);stroke-width:1.4;fill:none}
+.lnF{stroke:var(--fail);stroke-width:1.4;fill:none;stroke-dasharray:5 4}
+.mkI{fill:var(--ink)} .mkM{fill:var(--muted)} .mkO{fill:var(--over)} .mkU{fill:var(--under)}
+.mkG{fill:var(--ok)} .mkW{fill:var(--warn)} .mkF{fill:var(--fail)}
+</style>
+<div class="wrap">
+
+<div class="eyebrow">ros2_ws / r3d_bringup · cam_tuner.cpp · cam_tune_one(cfg)</div>
+<h1>相机曝光/增益整定流程</h1>
+<p class="sub">startRecord 前置闭环：小流抓帧 → 统计 (mean, hl) → policy_step 调 exposure/gain → ≤3 轮收敛（目标 70，略欠曝保高光，后处理提亮到 128）。三张视图：主流程闭环、collect_stats 内环、出口语义。策略参数外置 cam_tune.json，改文件即对下一次整定生效。</p>
+<div class="chips">
+<span class="chip">目标 mean 70 ± 15</span>
+<span class="chip">高光(≥250) ≤ 8%</span>
+<span class="chip">起步 exp 7.8ms · gain 16</span>
+<span class="chip">≤ 3 轮 · 预算 3s</span>
+<span class="chip">640×480 MJPG @30fps</span>
+<span class="chip">settle 60ms</span>
+<span class="chip">exp ≤ 10ms · gain ≤ 64</span>
+<span class="chip">参数外置 cam_tune.json</span>
+</div>
+
+<div class="seclabel">主流程 · cam_tune_one</div>
+<figure>
+<div class="fig-scroll">
+<svg viewBox="0 0 980 1376" role="img" aria-label="cam_tune_one 主流程图：打开相机、查控制项、固定起步参数后进入最多 3 轮的迭代闭环，每轮统计亮度与高光并按过曝/偏暗分支调整曝光增益，出口汇入整定结果并释放设备">
+<defs>
+<marker id="f1I" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0L10,5L0,10Z" class="mkI"/></marker>
+<marker id="f1M" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0L10,5L0,10Z" class="mkM"/></marker>
+<marker id="f1O" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0L10,5L0,10Z" class="mkO"/></marker>
+<marker id="f1U" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0L10,5L0,10Z" class="mkU"/></marker>
+<marker id="f1G" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0L10,5L0,10Z" class="mkG"/></marker>
+<marker id="f1W" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0L10,5L0,10Z" class="mkW"/></marker>
+<marker id="f1F" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0L10,5L0,10Z" class="mkF"/></marker>
+</defs>
+
+<rect x="110" y="20" width="280" height="40" rx="20" class="pill"/>
+<text x="250" y="45" text-anchor="middle" class="tm" font-size="13">cam_tune_one(cfg)</text>
+<text x="404" y="45" class="tmeta" text-anchor="start">t0 + 3s 硬预算（budget_ms = 3000）</text>
+<path d="M250,60 V88" class="ln" marker-end="url(#f1I)"/>
+
+<rect x="110" y="88" width="280" height="68" rx="10" class="box"/>
+<text x="250" y="112" text-anchor="middle" class="tt">打开相机（独占）</text>
+<text x="250" y="130" text-anchor="middle" class="ts">640×480 MJPG @30fps · Manual</text>
+<text x="250" y="146" text-anchor="middle" class="ts">auto_exposure=0 · 白平衡不动</text>
+<path d="M390,122 H610" class="lnF" marker-end="url(#f1F)"/>
+<text x="500" y="114" text-anchor="middle" class="lb">失败</text>
+<rect x="610" y="94" width="330" height="56" rx="10" class="bFail"/>
+<text x="775" y="116" text-anchor="middle" class="ttS cF">打开失败 / 被占用</text>
+<text x="775" y="136" text-anchor="middle" class="ts">回退自动曝光 · res.ok=false（析构释放）</text>
+
+<path d="M250,156 V184" class="ln" marker-end="url(#f1I)"/>
+<rect x="110" y="184" width="280" height="68" rx="10" class="box"/>
+<text x="250" y="208" text-anchor="middle" class="tt">查控制项范围</text>
+<text x="250" y="227" text-anchor="middle" class="tm">EXPOSURE_ABSOLUTE → [min,max]</text>
+<text x="250" y="244" text-anchor="middle" class="ts">GAIN → 有/无（has_gain）</text>
+<path d="M390,218 H610" class="lnF" marker-end="url(#f1F)"/>
+<text x="500" y="210" text-anchor="middle" class="lb">无曝光项</text>
+<rect x="610" y="190" width="330" height="56" rx="10" class="bFail"/>
+<text x="775" y="212" text-anchor="middle" class="ttS cF">无曝光控制项（CSI 相机？）</text>
+<text x="775" y="232" text-anchor="middle" class="ts">回退自动曝光 · res.ok=false</text>
+
+<path d="M250,252 V280" class="ln" marker-end="url(#f1I)"/>
+<rect x="110" y="280" width="280" height="76" rx="10" class="box"/>
+<text x="250" y="302" text-anchor="middle" class="tt">起步 = 固定默认参数</text>
+<text x="250" y="321" text-anchor="middle" class="ts">exp 7.8ms · gain 16（非 AE 残留）</text>
+<text x="250" y="339" text-anchor="middle" class="ts">apply → settle 60ms · 关 dynamic_framerate</text>
+
+<path d="M250,356 V384" class="ln" marker-end="url(#f1I)"/>
+<rect x="36" y="384" width="468" height="720" rx="16" class="loop"/>
+<text x="56" y="410" text-anchor="start" class="cap">迭代闭环 · it = 1…3 · 总预算 3s</text>
+
+<rect x="120" y="424" width="260" height="48" rx="10" class="dec"/>
+<text x="250" y="443" text-anchor="middle" class="tm">deadline 到？</text>
+<text x="250" y="460" text-anchor="middle" class="ts">now ≥ t0 + 3s</text>
+<path d="M380,448 H610" class="lnW" marker-end="url(#f1W)"/>
+<text x="495" y="440" text-anchor="middle" class="lb">预算尽</text>
+<rect x="610" y="416" width="330" height="64" rx="10" class="bWarn"/>
+<text x="775" y="436" text-anchor="middle" class="ttS cW">budget_out ⚠ 预算/轮次用尽</text>
+<text x="775" y="453" text-anchor="middle" class="ts">末次参数方向正确 · 未经复核</text>
+<text x="775" y="470" text-anchor="middle" class="ts">保持手动 · break</text>
+
+<path d="M250,472 V500" class="ln" marker-end="url(#f1I)"/>
+<rect x="120" y="500" width="260" height="76" rx="10" class="box"/>
+<text x="250" y="522" text-anchor="middle" class="tt">collect_stats（图 2）</text>
+<text x="250" y="540" text-anchor="middle" class="ts">丢 3 暖帧 → 取 3 帧均值</text>
+<text x="250" y="557" text-anchor="middle" class="ts">→ mean, hl（≥250 高光占比）</text>
+<path d="M380,528 H610" class="lnW" marker-end="url(#f1W)"/>
+<text x="495" y="520" text-anchor="middle" class="lb">流卡死</text>
+<rect x="610" y="496" width="330" height="64" rx="10" class="bWarn"/>
+<text x="775" y="516" text-anchor="middle" class="ttS cW">Stalled ⚠ 流卡死</text>
+<text x="775" y="533" text-anchor="middle" class="ts">连续坏帧 / 超时超预算</text>
+<text x="775" y="550" text-anchor="middle" class="ts">→ 直写默认 7.8ms / gain16</text>
+<path d="M380,560 H584 V470 H610" class="lnM" marker-end="url(#f1M)"/>
+<text x="500" y="574" text-anchor="middle" class="lb">deadline</text>
+
+<path d="M250,576 V604" class="ln" marker-end="url(#f1I)"/>
+<rect x="120" y="604" width="260" height="48" rx="10" class="dec"/>
+<text x="250" y="623" text-anchor="middle" class="tm">over ？</text>
+<text x="250" y="640" text-anchor="middle" class="ts">mean &gt; 85 ∨ hl &gt; 8%</text>
+<path d="M120,628 H92 V812 H120" class="lnM" marker-end="url(#f1M)"/>
+<text x="106" y="620" text-anchor="middle" class="lb">否</text>
+<text x="258" y="666" text-anchor="start" class="lb">是</text>
+<path d="M250,652 V668" class="lnO" marker-end="url(#f1O)"/>
+
+<rect x="120" y="668" width="260" height="92" rx="10" class="bOver"/>
+<text x="250" y="690" text-anchor="middle" class="tt cO">过曝：先压曝光、到底才压增益</text>
+<text x="250" y="710" text-anchor="middle" class="tm">f = clamp(70/mean_eff, 0.25, 1.0)</text>
+<text x="250" y="728" text-anchor="middle" class="ts">mean_eff = mean×(1+1.5·hl) 削顶感知 ※2</text>
+<text x="250" y="746" text-anchor="middle" class="tm">mean 达标仅 hl 超：×0.85 ※1</text>
+<path d="M250,760 V788" class="ln" marker-end="url(#f1I)"/>
+
+<rect x="120" y="788" width="260" height="48" rx="10" class="dec"/>
+<text x="250" y="807" text-anchor="middle" class="tm">under ？</text>
+<text x="250" y="824" text-anchor="middle" class="ts">mean &lt; 55</text>
+<path d="M380,812 H610" class="lnG" marker-end="url(#f1G)"/>
+<text x="495" y="804" text-anchor="middle" class="lb">否 · 入死区</text>
+<rect x="610" y="780" width="330" height="64" rx="10" class="bOk"/>
+<text x="775" y="800" text-anchor="middle" class="ttS cG">✔ done · converged=true</text>
+<text x="775" y="817" text-anchor="middle" class="ts">|mean−70| ≤ 15 且 hl ≤ 8%</text>
+<text x="775" y="834" text-anchor="middle" class="ts">break → 收敛出口</text>
+<text x="258" y="850" text-anchor="start" class="lb">是</text>
+<path d="M250,836 V852" class="lnU" marker-end="url(#f1U)"/>
+
+<rect x="120" y="852" width="260" height="92" rx="10" class="bUnder"/>
+<text x="250" y="874" text-anchor="middle" class="tt cU">偏暗：先升曝光、到顶才升增益</text>
+<text x="250" y="894" text-anchor="middle" class="tm">f = min(120/mean, 2.5)</text>
+<text x="250" y="912" text-anchor="middle" class="ts">exp 截上限 10ms · gain ≤ 64</text>
+<text x="250" y="930" text-anchor="middle" class="tm">new_exp = min(exp·f, emax)</text>
+<path d="M250,944 V972" class="ln" marker-end="url(#f1I)"/>
+
+<rect x="120" y="972" width="260" height="44" rx="10" class="dec"/>
+<text x="250" y="999" text-anchor="middle" class="tm">exp / gain 有变化？</text>
+<path d="M380,994 H610" class="lnW" marker-end="url(#f1W)"/>
+<text x="495" y="986" text-anchor="middle" class="lb">无变化</text>
+<rect x="610" y="962" width="330" height="64" rx="10" class="bWarn"/>
+<text x="775" y="982" text-anchor="middle" class="ttS cW">⚠ stuck · 顶到参数边界</text>
+<text x="775" y="999" text-anchor="middle" class="ts">保持尽力参数 · break</text>
+<text x="775" y="1016" text-anchor="middle" class="ts">verdict：仍偏暗 / 仍偏曝</text>
+<text x="258" y="1028" text-anchor="start" class="lb">有变化</text>
+<path d="M250,1016 V1032" class="ln" marker-end="url(#f1I)"/>
+
+<rect x="120" y="1032" width="260" height="48" rx="10" class="box"/>
+<text x="250" y="1051" text-anchor="middle" class="tt">apply_params → settle 60ms</text>
+<text x="250" y="1068" text-anchor="middle" class="ts">写入值夹到控制项范围</text>
+<path d="M120,1056 H76 V448 H120" class="lnM" marker-end="url(#f1M)"/>
+<text transform="rotate(-90 64 752)" x="64" y="752" text-anchor="middle" class="lb">下一轮 it+1</text>
+<text x="250" y="1096" text-anchor="middle" class="tmeta">it = 3 用尽 → budget_out（末轮已 apply、无复核）</text>
+
+<path d="M250,1104 V1144" class="ln" marker-end="url(#f1I)"/>
+<text x="262" y="1128" text-anchor="start" class="lb">break（任一出口）</text>
+<rect x="110" y="1144" width="820" height="104" rx="12" class="bAcc"/>
+<text x="520" y="1170" text-anchor="middle" class="tt cA">整定结果 · res.ok = true（相机保持手动，留存整定参数）</text>
+<text x="520" y="1192" text-anchor="middle" class="ts">verdict 优先级：✔ 收敛 → ⚠ 流卡死 → ⚠ 预算/轮次用尽 → ⚠ 仍偏暗/仍偏曝</text>
+<text x="520" y="1216" text-anchor="middle" class="tm">后处理提亮估算 factor = clamp(128 / mean, 1, 2)</text>
+<path d="M520,1248 V1288" class="ln" marker-end="url(#f1I)"/>
+<rect x="300" y="1288" width="440" height="60" rx="10" class="box"/>
+<text x="520" y="1310" text-anchor="middle" class="tt">release 设备（参数留存于驱动）</text>
+<text x="520" y="1330" text-anchor="middle" class="ts">image_odom_recorder 以 auto_exposure:=false 打开 → 沿用整定值</text>
+</svg>
+</div>
+<figcaption><b>图 1 — cam_tune_one 主流程</b>：开流 → 固定起步 → ≤3 轮闭环（统计 → policy_step → 写参）→ 汇出 verdict。<br>
+<span class="fo">※1</span> over 判定优先于 under：整体偏暗（mean&lt;55）但局部高光超 8% 时也走压曝光支，可能越压越暗直到参数边界。<br>
+<span class="fo">※2</span> 削顶感知：大面积过曝时 mean 被钳在 ~250、target/mean 低估降幅，按高光占比放大等效 mean（hl=0.5 → f 触 ×0.25 下限），3 轮可压 ~64 倍过曝；未削顶（hl≈0）时即为一步到位的 deadbeat。</figcaption>
+</figure>
+
+<div class="seclabel">内环 · collect_stats</div>
+<figure>
+<div class="fig-scroll">
+<svg viewBox="0 0 940 236" role="img" aria-label="collect_stats 内环流程图：每帧先查 deadline，grab 取最新帧，暖帧计数大于零则丢弃，否则解码统计，满 3 帧返回均值；坏帧与超时共用失败预算，超限判流卡死">
+<defs>
+<marker id="f2I" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0L10,5L0,10Z" class="mkI"/></marker>
+<marker id="f2M" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0L10,5L0,10Z" class="mkM"/></marker>
+</defs>
+<rect x="16" y="32" width="190" height="40" rx="20" class="pill"/>
+<text x="111" y="57" text-anchor="middle" class="tm">collect_stats(deadline)</text>
+<path d="M206,52 H238" class="ln" marker-end="url(#f2I)"/>
+<rect x="238" y="24" width="158" height="60" rx="10" class="box"/>
+<text x="317" y="44" text-anchor="middle" class="tt">grab()</text>
+<text x="317" y="61" text-anchor="middle" class="ts">排空缓冲取最新帧</text>
+<text x="317" y="76" text-anchor="middle" class="ts">poll 超时 1s</text>
+<path d="M396,52 H424" class="ln" marker-end="url(#f2I)"/>
+<rect x="424" y="24" width="150" height="60" rx="10" class="dec"/>
+<text x="499" y="48" text-anchor="middle" class="tm">暖帧计数 &gt; 0？</text>
+<text x="499" y="66" text-anchor="middle" class="ts">warmup = 3</text>
+<text x="507" y="102" text-anchor="start" class="lb">是</text>
+<path d="M499,84 V112" class="ln" marker-end="url(#f2I)"/>
+<rect x="424" y="112" width="150" height="40" rx="10" class="box"/>
+<text x="499" y="137" text-anchor="middle" class="ts">丢弃（旧参数残留）</text>
+<path d="M424,132 H317 V84" class="lnM" marker-end="url(#f2M)"/>
+<text x="588" y="46" text-anchor="middle" class="lb">否</text>
+<path d="M574,52 H602" class="ln" marker-end="url(#f2I)"/>
+<rect x="602" y="24" width="160" height="60" rx="10" class="box"/>
+<text x="682" y="44" text-anchor="middle" class="tt">解码 + 灰度统计</text>
+<text x="682" y="61" text-anchor="middle" class="tm" font-size="11">MJPG → mean_i, hl_i</text>
+<text x="682" y="76" text-anchor="middle" class="ts">失败帧不计、重抓</text>
+<path d="M762,52 H790" class="ln" marker-end="url(#f2I)"/>
+<rect x="790" y="24" width="134" height="60" rx="10" class="dec"/>
+<text x="857" y="48" text-anchor="middle" class="tm">统计满 3 帧？</text>
+<text x="857" y="66" text-anchor="middle" class="ts">frames = 3</text>
+<text x="865" y="102" text-anchor="start" class="lb">是</text>
+<path d="M857,84 V112" class="ln" marker-end="url(#f2I)"/>
+<rect x="700" y="112" width="224" height="40" rx="20" class="bOk"/>
+<text x="812" y="137" text-anchor="middle" class="tm cG">返回 mean, hl = 3 帧均值</text>
+<path d="M857,24 V14 H317 V24" class="lnM" marker-end="url(#f2M)"/>
+<text x="586" y="10" text-anchor="middle" class="lb">未满 → 继续抓</text>
+<text x="16" y="192" text-anchor="start" class="tmeta">坏帧预算 fail_budget = warmup + frames + 4：抓取失败 / 解码失败各 −1，连续超限 → Stalled（→ 图 1 右栏）</text>
+<text x="16" y="212" text-anchor="start" class="tmeta">每次抓帧前查 deadline（3s 总预算），到点 → Deadline（→ 图 1 budget_out，保留已调参数）</text>
+</svg>
+</div>
+<figcaption><b>图 2 — collect_stats 内环</b>：一轮统计 = 丢 3 帧旧参数残留 + 3 帧取均值；坏帧与超时共用 fail_budget，超限即判流卡死。</figcaption>
+</figure>
+
+<div class="seclabel">出口语义 · verdict</div>
+<div class="tbl-scroll">
+<table>
+<thead><tr><th>verdict（日志）</th><th>触发条件</th><th>相机最终状态</th><th>res</th></tr></thead>
+<tbody>
+<tr><td class="v"><span class="g">✔ 收敛</span></td><td>某轮统计入死区：|mean−70| ≤ 15 且 hl ≤ 8%</td><td>保持整定值（手动曝光）</td><td class="v">ok=true · converged=true</td></tr>
+<tr><td class="v"><span class="w">⚠ 流卡死</span></td><td>坏帧/超时耗尽 fail_budget</td><td>直写默认 7.8ms / gain16（手动）</td><td class="v">ok=true</td></tr>
+<tr><td class="v"><span class="w">⚠ 预算/轮次用尽</span></td><td>3s deadline 到，或 it = 5 末轮后</td><td>末次参数（方向正确，未经复核）</td><td class="v">ok=true</td></tr>
+<tr><td class="v"><span class="w">⚠ 仍偏暗 / 仍偏曝</span></td><td>policy_step 无变化（顶到参数边界）</td><td>保持尽力参数（手动）</td><td class="v">ok=true</td></tr>
+<tr><td class="v"><span class="f">✖ 回退自动曝光</span></td><td>相机打开失败 / 无曝光控制项（CSI）</td><td>配置文件 auto_exposure（AE 兜底）</td><td class="v">ok=false → cam_tune_pair 返回 false</td></tr>
+</tbody>
+</table>
+</div>
+
+<p class="foot">策略源自桌面端 <code>adjust_cam_param.py</code> 的 <code>policy_step</code>，板端三处演进：目标 70（桌面 120）、过曝步长削顶感知（mean_eff、下限 ×0.25）、≤3 轮档位。策略参数（target/tol/hl_max/max_iter 等）外置 <code>config/cam_tune.json</code>：每次 startRecord 重读、缺失/类型不符逐项回退编译期默认，<code>$R3D_CAM_TUNE_FILE</code> 可覆盖路径。<code>cam_tune_pair</code>：左右双机并行整定（TUNE_DEV0 = 右 / TUNE_DEV2 = 左），双机均 ok 时 recorder 以手动曝光启动沿用整定值，任一失败回退 AE。</p>
+
+</div>

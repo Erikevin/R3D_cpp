@@ -1,9 +1,11 @@
 // startRecord 前置的相机曝光/增益快速整定 —— 实现见 cam_tuner.hpp 头部说明。
-// 策略函数 policy_step 与 adjust_cam_param.py 逐行一致；仅两处工程性简化：
-//   1) 控制 ioctl 按 V4L2 CID 直达（等价 v4l2-ctl 的 exposure_time_absolute/gain），
-//      无需 Python 端那套跨驱动名字模糊解析；
-//   2) 写参数每次直写（Python 跳过未变化项是为省 SSH 往返 ~20ms+，本地 ioctl
-//      仅微秒级，重复写无害）。
+// 策略函数 policy_step 源自 adjust_cam_param.py；板端演进（桌面版未同步）：
+//   1) 过曝步长削顶感知：f 按 mean_eff = mean×(1+1.5·hl) 计算、单轮下限放宽到
+//      ×0.25 —— 大面积过曝（mean 削顶钳在 ~250）时 target/mean 低估降幅（旧版
+//      单轮最多 ×0.47，0.4 下限实际够不着），有限轮数压不到目标；
+//   2) 目标亮度 70（桌面版 120），策略参数外部化 config/cam_tune.json。
+// 工程性简化（不变）：控制 ioctl 按 V4L2 CID 直达；写参数每次直写（本地 ioctl
+// 仅微秒级，重复写无害）。
 
 #include "r3d_ws/cam_tuner.hpp"
 
@@ -13,6 +15,8 @@
 
 #include <linux/videodev2.h>
 
+#include <nlohmann/json.hpp>
+
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -20,6 +24,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -32,9 +39,14 @@
 namespace r3d_ws {
 namespace {
 
-// 与 adjust_cam_param.py 逐项对应的策略常量
-constexpr double kStepDownMax = 0.4;    // 单轮乘性调整下限（防过冲震荡）
-constexpr double kStepUpMax = 2.5;      // 单轮乘性调整上限
+// 策略常量（kStepUpMax 与 adjust_cam_param.py 一致；压方向为板端演进）
+constexpr double kStepUpMax = 2.5;      // 单轮乘性调整上限（升方向）
+constexpr double kStepDownMin = 0.25;   // 单轮乘性调整下限（压方向）。Python 版 0.4，
+                                        // 但 mean≤255 时 target/mean ≥ ~0.27、0.4 实际
+                                        // 够不着（死代码）；削顶感知放开到 0.25 换收
+                                        // 敛速度，欠冲由 under 支下一步拉回
+constexpr double kHlClipBoost = 1.5;    // 削顶感知增益：mean_eff = mean×(1+1.5·hl)，
+                                        // 高光占比越大说明真实亮度超出测得 mean 越多
 // UVC exposure_absolute 单位 = 100µs → 1ms = 10。必须是 double：int 会把
 // max(min,1)/10、cur/10 整除成 0（实测把左相机曝光下限算成 0.0ms，切 Manual
 // 后曝光清零的相机乘性调整 0×2.5=0 永远起步不了）。
@@ -46,7 +58,8 @@ constexpr double kLightTarget = 128.0;  // post_proc_tool 动态提亮的目标�
 constexpr double kDefaultExpMs = 7.8;
 constexpr int kDefaultGain = 16;
 
-// 控制策略纯函数 —— 与 adjust_cam_param.py policy_step 逐行一致。
+// 控制策略纯函数 —— 源自 adjust_cam_param.py policy_step；过曝支为板端演进
+// （削顶感知步长，见上 kHlClipBoost/kStepDownMin），其余分支与 Python 版一致。
 struct StepOut {
   double exp_ms;
   double gain;  // 内部按浮点计算（Python 的 gain*f 也是浮点中间量），写入时才取整
@@ -71,9 +84,13 @@ StepOut policy_step(double mean, double hl, double exp_ms, double gain,
   }
 
   if (over) {
-    // 过曝：先乘性压曝光；mean 已达标但仅高光超标时温和压 15%
+    // 过曝：先乘性压曝光；mean 已达标但仅高光超标时温和压 15%。削顶感知：大面积
+    // 过曝时 mean 被钳在 ~250，target/mean 低估所需降幅，按高光占比放大等效 mean
+    // （hl=0.5 → mean_eff≈1.75×mean → f 触 ×0.25 下限，3 轮可压 ~64 倍过曝）。
+    const double mean_eff = mean * (1.0 + kHlClipBoost * hl);
     const double f = (mean > cfg.target + cfg.tol)
-                         ? std::min(std::max(cfg.target / std::max(mean, 1.0), kStepDownMax), 1.0)
+                         ? std::min(std::max(cfg.target / std::max(mean_eff, 1.0),
+                                             kStepDownMin), 1.0)
                          : 0.85;
     const double new_exp = std::max(exp_ms * f, emin);  // 截到下限
     const double new_gain =
@@ -165,6 +182,63 @@ std::string fmt1(double v) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%.1f", v);
   return std::string(buf);
+}
+
+// 从 config/cam_tune.json 覆盖策略参数 —— 与 mapping_commands.json 同一套约定
+// （相对 cwd 读取、$TUNE_PARAM_FILE_ENV 可覆盖为绝对路径、缺失静默用默认、类型
+// 不符逐项告警回退）。每次 startRecord 重新读：改文件即对下一次整定生效，无需
+// 重编译/重启桥。荒值护栏：死区/轮数/预算至少可用，否则闭环永不收敛。
+void load_tune_overrides(CamTuneConfig &cfg) {
+  const char *env = std::getenv(config::TUNE_PARAM_FILE_ENV);
+  const std::string path = (env && *env) ? env : config::TUNE_PARAM_FILE_DEFAULT;
+  std::ifstream f(path);
+  if (!f) {
+    log::warn("📷 整定参数文件无法打开，使用编译期默认: " + path);
+    return;
+  }
+  std::stringstream ss;
+  ss << f.rdbuf();
+  nlohmann::json j;
+  try {
+    j = nlohmann::json::parse(ss.str());
+  } catch (const std::exception &e) {
+    log::warn(std::string("📷 整定参数 JSON 解析失败，使用编译期默认: ") + e.what());
+    return;
+  }
+  if (!j.is_object()) {
+    log::warn("📷 整定参数 JSON 顶层非对象，使用编译期默认");
+    return;
+  }
+  auto num = [&](const char *key, double &dst) {
+    if (!j.contains(key)) return;  // 缺失=可选项，静默用默认（同 data_dir 惯例）
+    const auto &v = j.at(key);
+    if (!v.is_number()) {
+      log::warn(std::string("📷 整定参数非数值，该项使用默认: ") + key);
+      return;
+    }
+    dst = v.get<double>();
+  };
+  auto integ = [&](const char *key, int &dst) {
+    double d = dst;
+    num(key, d);
+    dst = static_cast<int>(std::lround(d));
+  };
+  num("target", cfg.target);
+  num("tol", cfg.tol);
+  num("hl_max", cfg.hl_max);
+  num("max_exp_ms", cfg.max_exp_ms);
+  integ("max_gain", cfg.max_gain);
+  integ("warmup", cfg.warmup);
+  integ("frames", cfg.frames);
+  integ("settle_ms", cfg.settle_ms);
+  integ("max_iter", cfg.max_iter);
+  integ("budget_ms", cfg.budget_ms);
+  cfg.tol = std::max(cfg.tol, 1.0);
+  cfg.max_iter = std::max(cfg.max_iter, 1);
+  cfg.budget_ms = std::max(cfg.budget_ms, 500);
+  log::info("📷 已加载整定参数 " + path + ": target=" + fmt1(cfg.target) + "±" +
+            fmt1(cfg.tol) + " 高光≤" + fmt1(cfg.hl_max * 100) + "% max_iter=" +
+            std::to_string(cfg.max_iter) + " 预算=" + std::to_string(cfg.budget_ms) + "ms");
 }
 
 }  // namespace
@@ -309,6 +383,8 @@ bool cam_tune_pair() {
   lc.side = "右";  // 实机核验：video0 为右相机
   rc.device = config::TUNE_DEV2;
   rc.side = "左";  // 实机核验：video2 为左相机
+  load_tune_overrides(lc);  // JSON 策略参数读一次（失败回退默认），双机共用分发
+  rc.take_policy_from(lc);
 
   CamTuneResult lr, rr;
   log::info("📷 相机参数整定开始（≤" + std::to_string(lc.budget_ms) + "ms，双机并行）...");

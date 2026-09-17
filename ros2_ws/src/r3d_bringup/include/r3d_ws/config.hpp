@@ -42,11 +42,17 @@ inline constexpr const char* MAPPING_CMD_FILE_ENV     = "R3D_MAPPING_CMD_FILE";
 inline constexpr const char* MAPPING_CMD_FILE_DEFAULT = "ros2_ws/src/r3d_bringup/config/mapping_commands.json";
 
 // ---- startRecord 前置相机整定（adjust_cam_param 快速档） ---------------------
-// 收到 startRecord 后先整定左右相机曝光/增益（cam_tuner.hpp，≤3s、≤5轮、双机
+// 收到 startRecord 后先整定左右相机曝光/增益（cam_tuner.hpp，≤3s、≤3轮、双机
 // 并行），完成后才拉起建图进程链。设备须与 image_odom_recorder 的
 // camera_device0/camera_device2 参数一致（默认 /dev/video0 与 /dev/video2）。
 inline constexpr bool TUNE_ENABLE = true;   // false=跳过整定，直接按原流程启动
 inline constexpr const char* TUNE_DEV0 = "/dev/video0";  // 右相机（实机核验）
 inline constexpr const char* TUNE_DEV2 = "/dev/video2";  // 左相机（实机核验）
+// 整定策略参数 JSON（target/tol/hl_max/max_iter 等）。与 mapping_commands.json 同
+// 约定：相对 cwd 读取（桥从 ros2_ws 父目录启动）、$R3D_CAM_TUNE_FILE 可覆盖为绝对
+// 路径；每次 startRecord 重新读取（改文件即对下一次整定生效，无需重编译/重启），
+// 缺失/类型不符逐项回退 cam_tuner.hpp 编译期默认。
+inline constexpr const char* TUNE_PARAM_FILE_ENV     = "R3D_CAM_TUNE_FILE";
+inline constexpr const char* TUNE_PARAM_FILE_DEFAULT = "ros2_ws/src/r3d_bringup/config/cam_tune.json";
 
 } // namespace r3d_ws::config

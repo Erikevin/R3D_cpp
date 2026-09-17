@@ -160,7 +160,7 @@ void WsBridgeNode::handle_command(const nlohmann::json& msg,
     auto state = state_;
     auto mapping = mapping_;
     std::thread([state, mapping] {
-      // 1) 相机曝光/增益快速整定（策略对齐 adjust_cam_param，双机并行，≤3s/≤5轮）。
+      // 1) 相机曝光/增益快速整定（策略源自 adjust_cam_param，双机并行，≤3s/≤3轮）。
       //    全部成功 → 之后 camera 以手动曝光启动，沿用驱动里的整定值；
       //    任一失败 → 回退配置文件的 auto_exposure（AE 兜底）。
       const bool tuned = config::TUNE_ENABLE && cam_tune_pair();

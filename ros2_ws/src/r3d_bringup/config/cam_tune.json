@@ -1,0 +1,13 @@
+{
+  "_comment": "r3d_bringup 相机整定策略参数（cam_tuner.cpp 每次 startRecord 读取）。整定目标：把画面平均亮度 mean 调进 [target-tol, target+tol] 且高光(≥250)占比 ≤ hl_max。target=70 为 ETTL 取向：略欠曝保高光，录制后由 post_proc_tool 动态提亮到 128（factor≈1.8，会放大 8-bit 量化噪声——用噪声换高光的取舍；要回到旧的明亮直出可改回 120）。max_iter=3 / budget_ms=3000：open ~1s + 3×(6 帧采集 ~0.2s + settle 60ms) ≈ 1.8s，典型场景 2~3 轮收敛；大面积过曝靠削顶感知步长（f = target/(mean×(1+1.5×hl))，下限 ×0.25）3 轮压达。桥按相对 cwd 读取（须从 ros2_ws 父目录启动），可用 $R3D_CAM_TUNE_FILE 覆盖为绝对路径；改文件对下一次 startRecord 生效，无需重新编译或重启桥。缺失项静默用默认，类型不符逐项告警并回退 cam_tuner.hpp 编译期默认。",
+  "target": 70.0,
+  "tol": 15.0,
+  "hl_max": 0.08,
+  "max_exp_ms": 10.0,
+  "max_gain": 64,
+  "warmup": 3,
+  "frames": 3,
+  "settle_ms": 60,
+  "max_iter": 3,
+  "budget_ms": 3000
+}

@@ -5,6 +5,6 @@
   "auto_wb": true,
   "save_odom": false,
   "livox": "source /opt/ros/humble/setup.bash && source /root/my_robot_d/install/setup.bash && exec ros2 launch livox_ros_driver2 msg_MID360_launch.py",
-  "lio_sam": "source /opt/ros/humble/setup.bash && source /root/my_robot_d/install/setup.bash && exec ros2 launch lio_sam run.launch.py cloud_frame_skip:=2 imu_odom_skip:=1",
-  "camera": "source /opt/ros/humble/setup.bash && source /root/my_robot_d/install/setup.bash && source /root/R3D_cpp/ros2_ws/install/setup.bash && exec ros2 run r3d_bringup image_odom_recorder --ros-args -p save_fps:=2"
+  "lio_sam": "source /opt/ros/humble/setup.bash && source /root/my_robot_d/install/setup.bash && exec ros2 launch lio_sam run.launch.py cloud_point_skip:=1 cloud_frame_skip:=3 imu_odom_skip:=1",
+  "camera": "source /opt/ros/humble/setup.bash && source /root/my_robot_d/install/setup.bash && source /root/R3D_cpp/ros2_ws/install/setup.bash && exec ros2 run r3d_bringup image_odom_recorder --ros-args -p save_fps:=10"
 }
